@@ -5,11 +5,15 @@ if (!process.env.BETTER_AUTH_SECRET) {
   throw new Error('BETTER_AUTH_SECRET environment variable is required')
 }
 
-// In production use the explicit URL; in dev fall back to localhost
+// Google OAuth only accepts redirect URIs registered in Google Cloud Console.
+// VERCEL_PROJECT_PRODUCTION_URL resolves to the auto-generated "-mu" domain,
+// which is not registered, so production is pinned to the primary domain.
+const PRIMARY_PRODUCTION_URL = 'https://shayona-footwear.vercel.app'
+
 const baseURL =
   process.env.BETTER_AUTH_URL ??
-  (process.env.VERCEL_PROJECT_PRODUCTION_URL
-    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+  (process.env.VERCEL_ENV === 'production'
+    ? PRIMARY_PRODUCTION_URL
     : process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
       : 'http://localhost:3000')
