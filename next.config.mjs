@@ -13,7 +13,8 @@ const nextConfig = {
   // callback and session cookie always live on the same host.
   async redirects() {
     return [
-      'shayona-inventory-managment-mu.vercel.app',
+      'localhost',
+      '127.0.0.1',
       'shayona-inventory-managment.vercel.app',
     ].map((host) => ({
       source: '/:path*',
