@@ -42,8 +42,50 @@ const trustedOrigins =
       }
     : staticTrustedOrigins
 
+const ADMIN_EMAILS = ['shayonamartsys@gmail.com']
+
+// Roles are stored as a comma-separated list; add "admin" while keeping any
+// other assigned roles, and drop the placeholder "user" role.
+async function ensureAdminRole(userId: string, email?: string | null) {
+  if (!email || !ADMIN_EMAILS.includes(email.toLowerCase())) return
+  const { rows } = await pool.query<{ role: string | null }>(
+    'SELECT role FROM "user" WHERE id = $1',
+    [userId],
+  )
+  if (rows.length === 0) return
+  const roles = (rows[0].role ?? '')
+    .split(',')
+    .map(r => r.trim())
+    .filter(r => r && r !== 'user')
+  if (roles.includes('admin')) return
+  await pool.query('UPDATE "user" SET role = $1, "updatedAt" = NOW() WHERE id = $2', [
+    ['admin', ...roles].join(','),
+    userId,
+  ])
+}
+
 export const auth = betterAuth({
   database: pool,
+  databaseHooks: {
+    user: {
+      create: {
+        after: async user => {
+          await ensureAdminRole(user.id, user.email)
+        },
+      },
+    },
+    session: {
+      create: {
+        after: async session => {
+          const { rows } = await pool.query<{ email: string }>(
+            'SELECT email FROM "user" WHERE id = $1',
+            [session.userId],
+          )
+          await ensureAdminRole(session.userId, rows[0]?.email)
+        },
+      },
+    },
+  },
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL,
   trustedOrigins,
