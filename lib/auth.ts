@@ -10,13 +10,20 @@ if (!process.env.BETTER_AUTH_SECRET) {
 // which is not registered, so production is pinned to the primary domain.
 const PRIMARY_PRODUCTION_URL = 'https://shayona-footwear.vercel.app'
 
+// `next dev` always uses localhost so the Google callback matches the
+// registered http://localhost:3000 URI, even when env vars pulled from Vercel
+// (VERCEL_ENV, VERCEL_URL, BETTER_AUTH_URL) point at a deployed domain.
+const LOCAL_DEV_URL = process.env.LOCAL_AUTH_URL || 'http://localhost:3000'
+
 const baseURL =
-  process.env.BETTER_AUTH_URL ??
-  (process.env.VERCEL_ENV === 'production'
-    ? PRIMARY_PRODUCTION_URL
-    : process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3000')
+  process.env.NODE_ENV === 'development'
+    ? LOCAL_DEV_URL
+    : process.env.BETTER_AUTH_URL ||
+      (process.env.VERCEL_ENV === 'production'
+        ? PRIMARY_PRODUCTION_URL
+        : process.env.VERCEL_URL
+          ? `https://${process.env.VERCEL_URL}`
+          : 'http://localhost:3000')
 
 // Static trusted origins — all known production domains
 const staticTrustedOrigins: string[] = [
