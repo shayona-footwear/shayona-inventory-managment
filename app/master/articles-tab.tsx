@@ -8,15 +8,40 @@ import type { Article } from '@/app/actions/articles'
 // ── CSV parser ────────────────────────────────────────────────────────────────
 // Expected columns (case-insensitive, order flexible):
 // artName, artCode, color, colorCode, maxSize, minSize
+function parseCsvLine(line: string): string[] {
+  const cells: string[] = []
+  let cell = ''
+  let quoted = false
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i]
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        cell += '"'
+        i++
+      } else {
+        quoted = !quoted
+      }
+    } else if (char === ',' && !quoted) {
+      cells.push(cell.trim())
+      cell = ''
+    } else {
+      cell += char
+    }
+  }
+  cells.push(cell.trim())
+  return cells
+}
+
 function parseCsv(text: string): Omit<Article, 'id' | 'createdAt' | 'updatedAt'>[] {
   const lines = text.split(/\r?\n/).filter(l => l.trim())
   if (lines.length < 2) return []
 
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/[^a-z]/g, ''))
-  const idx = (name: string) => headers.indexOf(name.toLowerCase())
+  const headers = parseCsvLine(lines[0]).map(h => h.toLowerCase().replace(/[^a-z]/g, ''))
+  const idx = (name: string) => headers.indexOf(name.toLowerCase().replace(/[^a-z]/g, ''))
 
   return lines.slice(1).flatMap(line => {
-    const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''))
+    const cols = parseCsvLine(line)
     const get = (name: string) => cols[idx(name)] ?? ''
     const artName = get('artname') || get('name')
     if (!artName) return []
@@ -109,8 +134,10 @@ export function ArticlesTab({ initialArticles, onListChange }: Props) {
               : `Imported ${imported} article${imported !== 1 ? 's' : ''} successfully.`
           setImportMsg({ type: imported === 0 ? 'err' : 'ok', text: msg })
           setTimeout(() => setImportMsg(null), 4000)
-        } catch {
-          setImportMsg({ type: 'err', text: 'Import failed. Please try again.' })
+        } catch (error) {
+          console.error('[v0] Article CSV import failed:', error)
+          const message = error instanceof Error ? error.message : 'Unknown import error'
+          setImportMsg({ type: 'err', text: `Import failed: ${message}` })
         }
       })
     }

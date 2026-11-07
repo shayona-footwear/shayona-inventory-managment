@@ -167,35 +167,34 @@ export async function importArticles(
   })
   const skipped = rows.length - newRows.length
 
-  for (const row of newRows) {
-    await db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(articles)
-        .values({ ...row })
-        .returning({ id: articles.id })
-      const articleId = inserted.id
+  // Insert the full CSV in one transaction. Per-row transactions make large
+  // imports slow enough to time out before the server action can respond.
+  await db.transaction(async (tx) => {
+    const inserted = newRows.length > 0
+      ? await tx.insert(articles).values(newRows).returning({ id: articles.id })
+      : []
 
-      // Sync article_colors
-      if (row.color.trim()) {
-        await tx.insert(articleColors).values({
-          articleId,
-          colorName: row.color.trim(),
-          colorHex:  row.colorCode.trim() || null,
-        })
-      }
+    const colorRows = inserted.flatMap(({ id }, index) => {
+      const row = newRows[index]
+      return row.color.trim()
+        ? [{ articleId: id, colorName: row.color.trim(), colorHex: row.colorCode.trim() || null }]
+        : []
+    })
+    if (colorRows.length > 0) await tx.insert(articleColors).values(colorRows)
 
-      // Sync article_sizes
+    const sizeRows = inserted.flatMap(({ id }, index) => {
+      const row = newRows[index]
       const min = parseInt(row.minSize, 10)
       const max = parseInt(row.maxSize, 10)
-      if (!isNaN(min) && !isNaN(max) && min <= max) {
-        const sizeRows = []
-        for (let size = min, order = 1; size <= max; size++, order++) {
-          sizeRows.push({ articleId, sizeLabel: String(size), sortOrder: order })
-        }
-        await tx.insert(articleSizes).values(sizeRows)
-      }
+      if (isNaN(min) || isNaN(max) || min > max) return []
+      return Array.from({ length: max - min + 1 }, (_, offset) => ({
+        articleId: id,
+        sizeLabel: String(min + offset),
+        sortOrder: offset + 1,
+      }))
     })
-  }
+    if (sizeRows.length > 0) await tx.insert(articleSizes).values(sizeRows)
+  })
 
   const list = await db.select().from(articles).orderBy(asc(articles.artName))
   return { imported: newRows.length, skipped, list }
