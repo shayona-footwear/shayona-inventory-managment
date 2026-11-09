@@ -262,6 +262,35 @@ export function BillingScannerPage({ vendors, articles = [], onBillSaved, embedd
   const [isFlashlightOn, setIsFlashlightOn]     = useState(false)
   const [qrDetected, setQrDetected]             = useState(false)
   const [uploadProcessing, setUploadProcessing] = useState(false)
+  const [hardwareScanReady, setHardwareScanReady] = useState(true)
+  const hardwareBufferRef = useRef('')
+  const hardwareTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // USB/Bluetooth scanners usually act like keyboards and finish each scan with
+  // Enter. Capture only rapid keys outside form fields.
+  useEffect(() => {
+    function handleHardwareKey(event: KeyboardEvent) {
+      if (!hardwareScanReady) return
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+      if (event.key === 'Enter') {
+        const raw = hardwareBufferRef.current.trim()
+        hardwareBufferRef.current = ''
+        if (hardwareTimerRef.current) clearTimeout(hardwareTimerRef.current)
+        if (raw) handleQrDecode(raw)
+        return
+      }
+      if (event.key.length !== 1) return
+      hardwareBufferRef.current += event.key
+      if (hardwareTimerRef.current) clearTimeout(hardwareTimerRef.current)
+      hardwareTimerRef.current = setTimeout(() => { hardwareBufferRef.current = '' }, 120)
+    }
+    window.addEventListener('keydown', handleHardwareKey)
+    return () => {
+      window.removeEventListener('keydown', handleHardwareKey)
+      if (hardwareTimerRef.current) clearTimeout(hardwareTimerRef.current)
+    }
+  }, [hardwareScanReady])
 
   // ── Banners ────────────────────────────────────────────────────────────────
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
@@ -702,6 +731,20 @@ export function BillingScannerPage({ vendors, articles = [], onBillSaved, embedd
 
           {/* ── Camera ── */}
           <TabsContent value="camera" className="space-y-4">
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed border-primary/40 bg-primary/5 px-3 py-2.5 text-xs">
+              <div>
+                <p className="font-semibold text-foreground">Hardware scanner</p>
+                <p className="text-muted-foreground">Scan a warehouse QR/barcode; press Enter suffix is required.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHardwareScanReady(value => !value)}
+                className={`shrink-0 rounded-full px-3 py-1.5 font-semibold transition-colors ${hardwareScanReady ? 'bg-emerald-600 text-white' : 'bg-muted text-muted-foreground'}`}
+                aria-pressed={hardwareScanReady}
+              >
+                {hardwareScanReady ? 'Ready' : 'Off'}
+              </button>
+            </div>
             <Card>
               <CardHeader className="px-3 py-3 sm:px-6 sm:py-4">
                 <div className="flex items-center justify-between gap-2">
