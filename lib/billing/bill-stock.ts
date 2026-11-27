@@ -96,9 +96,9 @@ export interface OrderForDirectBill {
  * The order's open draft, or a new one tied to the order (drafts with an order stay out of the
  * Direct Billing drafts list). Only pending or assigned orders. 3–4 statements.
  */
-export async function openOrderDraft(db: DbOrTx, actor: Actor, orderId: number): Promise<OrderForDirectBill> {
+export async function openOrderDraft(db: DbOrTx, actor: Actor, orderId: number, opts: { allowOpen?: boolean } = { allowOpen: true }): Promise<OrderForDirectBill> {
   const [o] = await db.select({
-    id: orders.id, orderNumber: orders.orderNumber, status: orders.status, shopkeeperName: orders.shopkeeperName,
+    id: orders.id, orderNumber: orders.orderNumber, status: orders.status, isEmergency: orders.isEmergency, shopkeeperName: orders.shopkeeperName,
     shopkeeperPhone: orders.shopkeeperPhone, shopkeeperAddress: orders.shopkeeperAddress, pickerId: orders.pickerId,
     // The order's retailer (else the exact name match, as billing does) and the bill type to start from.
     retailerId: sql<string | null>`(SELECT x.id FROM retailers x
@@ -109,7 +109,13 @@ export async function openOrderDraft(db: DbOrTx, actor: Actor, orderId: number):
       ORDER BY (x.id = ${orders.retailerId}) DESC NULLS LAST LIMIT 1)`,
   }).from(orders).where(eq(orders.id, orderId)).limit(1)
   if (!o) throw new Error('Order not found.')
-  if (o.status !== 'pending' && o.status !== 'assigned') throw new Error(`This order is ${o.status} — only pending or assigned orders can be Direct billed.`)
+  // Pending / assigned (⚡ on the order, admins), or already sent to the biller as a Direct bill
+  // (packed + isEmergency, the earlier ⚡; owner 27 Nov 2026: billed on this screen too).
+  const sent = o.status === 'packed' && o.isEmergency
+  const notSent = o.status === 'pending' || o.status === 'assigned'
+  if (!sent && !(notSent && opts.allowOpen)) {
+    throw new Error(notSent ? 'Only an admin can Direct bill an order that is not sent to billing.' : `This order is ${o.status} — it cannot be Direct billed now.`)
+  }
   const items = await db.select({
     id: orderItems.id, artNumber: orderItems.artNumber, artCode: orderItems.artCode, colorNumber: orderItems.colorNumber,
     sizeNumber: orderItems.sizeNumber, quantityOrdered: orderItems.quantityOrdered,
@@ -119,7 +125,7 @@ export async function openOrderDraft(db: DbOrTx, actor: Actor, orderId: number):
   const draftId = open?.id ?? await createDraft(db, actor, {
     shopkeeperName: o.shopkeeperName, shopkeeperPhone: o.shopkeeperPhone, shopkeeperAddress: o.shopkeeperAddress,
   }, orderId)
-  const { status: _status, ...order } = o
+  const { status: _status, isEmergency: _sent, ...order } = o
   return { draftId, order, items }
 }
 
@@ -433,7 +439,8 @@ async function billOrderFromDraft(
 ): Promise<GeneratedBill> {
   const o = await billingPartyFor(tx, orderId) // locks the order
   if (!o) throw new Error('Order not found.')
-  if (o.status !== 'pending' && o.status !== 'assigned') throw new Error(`This order is ${o.status} — it cannot be Direct billed now.`)
+  const sent = o.status === 'packed' && o.isEmergency
+  if (o.status !== 'pending' && o.status !== 'assigned' && !sent) throw new Error(`This order is ${o.status} — it cannot be Direct billed now.`)
   if (!o.retailerId || !o.taxType) throw new Error(notInMasterMessage(o.shopkeeperName))
   const held = await enforceCredit(tx, { retailerId: o.retailerId }, bill.credit ?? { allowed: false, requested: false })
   if (held) {

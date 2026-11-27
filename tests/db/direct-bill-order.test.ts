@@ -68,4 +68,25 @@ describe('direct bill of an order from its draft (integration)', { skip: !harnes
   test('a billed order cannot be Direct billed again', async () => {
     await assert.rejects(openOrderDraft(h.db, admin, orderId), /billed/)
   })
+
+  test('an order already sent to the biller (old ⚡) is billed on the same screen; billers cannot open pending ones', async () => {
+    const biller: Actor = { id: 'u-admin', name: 'Biller' }
+    const sent = Number((await q<{ id: number }>(sql`
+      INSERT INTO orders ("orderNumber", "shopkeeperName", status, "isEmergency", "pickerId", "packedAt") VALUES ('ORD-T2', 'Test Shop', 'packed', true, 'u-admin', now()) RETURNING id`))[0].id)
+    const pending = Number((await q<{ id: number }>(sql`
+      INSERT INTO orders ("orderNumber", "shopkeeperName", status) VALUES ('ORD-T3', 'Test Shop', 'pending') RETURNING id`))[0].id)
+    await h.db.execute(sql`INSERT INTO order_items ("orderId", "artNumber", "artCode", "sizeNumber", "quantityOrdered") VALUES (${sent}, 'PUG-N42', 'PUGN42G', '6', 1)`)
+    await assert.rejects(openOrderDraft(h.db, biller, pending, { allowOpen: false }), /admin/)
+    const s = await openOrderDraft(h.db, biller, sent, { allowOpen: false })
+    assert.equal(s.order.pickerId, 'u-admin')
+    // The boxes of the first test are on its bill now; a size-6 box from a fresh label is needed.
+    const BOX_3 = 'A1PUGN42G-WHWH0006-0726R10MA0-339.50-1010-QX12P-1006101799'
+    assert.equal((await addDraftScan(h.db, biller, s.draftId, BOX_3, randomUUID())).status, 'added')
+    const bill = await generateDirectBill(h.db, biller, s.draftId, { shopkeeperName: 'Test Shop' }, { pickerId: 'u-admin' })
+    assert.equal(bill.id, sent)
+    const [o] = await q<{ status: string }>(sql`SELECT status FROM orders WHERE id = ${sent}`)
+    assert.equal(o.status, 'billed')
+    const [line] = await q<{ quantityPacked: number }>(sql`SELECT "quantityPacked" FROM order_items WHERE "orderId" = ${sent}`)
+    assert.equal(Number(line.quantityPacked), 1)
+  })
 })

@@ -140,6 +140,10 @@ export function BillerDashboard({ orders: initialOrders, currentBillerId = '', e
 
   // ── Scanner modal ────────────────────────────────────────────────────────────
   const [scanOrder, setScanOrder] = useState<BillerOrder | null>(null)
+  // A Direct bill sent by an admin (isEmergency): billed on the Direct Billing screen, as ⚡ on the
+  // Orders list does (owner, 27 Nov 2026: the old scan window was the old version).
+  const [directOrder, setDirectOrder] = useState<BillerOrder | null>(null)
+  const openOrder = (o: BillerOrder) => (o.isEmergency ? setDirectOrder(o) : openScanner(o))
   // Bill type of the bill being made (owner, 23 Nov 2026): starts from the retailer, changeable here.
   const [billType, setBillType] = useState<TaxType>('intra_state')
   // Bill discount / GST typed on this bill (owner, 24 Nov 2026); empty = the Master defaults.
@@ -1173,7 +1177,7 @@ Why is it cancelled?`)
                     <div onClick={e => e.stopPropagation()}>
                       <button
                         type="button"
-                        onClick={() => openScanner(order)}
+                        onClick={() => openOrder(order)}
                         disabled={isProcessing}
                         className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
                       >
@@ -1596,7 +1600,7 @@ Why is it cancelled?`)
                 <button
                   type="button"
                   disabled={isPending && activeId === detailOrder.id}
-                  onClick={() => openScanner(detailOrder)}
+                  onClick={() => { const o = detailOrder; setDetailOrder(null); openOrder(o) }}
                   className="w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
                 >
                   Scan Items
@@ -1666,6 +1670,41 @@ Why is it cancelled?`)
       )}
 
       {/* ── Scan & verify modal ── */}
+      {/* ── Direct bill on the Direct Billing screen (orders sent with ⚡) ── */}
+      {directOrder && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-background" role="dialog" aria-modal="true" aria-label={`Direct bill ${directOrder.orderNumber}`}>
+          <DialogKeys onClose={() => setDirectOrder(null)} />
+          <div className="sticky top-0 z-40 flex items-center gap-3 border-b border-border bg-background/95 px-3 py-2.5 backdrop-blur sm:px-4">
+            <button type="button" onClick={() => setDirectOrder(null)} aria-label="Back to bills"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border hover:bg-muted">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-base font-bold">⚡ Direct bill</p>
+              <p className="truncate text-xs text-muted-foreground">Scans are saved as you go — closing keeps them for this order.</p>
+            </div>
+          </div>
+          <div className="mx-auto max-w-6xl px-3 py-3 sm:px-4">
+            <BillingScannerPage
+              key={directOrder.id}
+              orderId={directOrder.id}
+              vendors={[]}
+              articles={articles}
+              pickers={pickers}
+              rateDefaults={billTemplate ? templateRates(billTemplate) : undefined}
+              embedded
+              onBillGenerated={(res) => {
+                const id = directOrder.id
+                setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'billed', billNo: res.billNo, billerId: currentBillerId, billedAt: new Date(res.billedAt) } : o))
+                setDirectOrder(null)
+                showMsg('ok', `${res.orderNumber} billed · bill ${res.billNo}`)
+                setActiveTab('generated')
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {scanOrder && (
         <div className="fixed inset-0 z-50 flex flex-col bg-background">
           <DialogKeys onClose={closeScanner} />

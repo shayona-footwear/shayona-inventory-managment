@@ -37,12 +37,13 @@ export async function startDirectBillDraft(header: Partial<DraftHeader> = {}): P
 }
 
 /**
- * ⚡ Direct bill on an order (admins, as before; owner 27 Nov 2026: bill it right there on the
- * Direct Billing screen). The order's draft (new or the one left open), its lines and picker.
+ * ⚡ Direct bill on an order (owner 27 Nov 2026: bill it right there on the Direct Billing screen).
+ * Admins: any pending / assigned order (⚡ on the Orders list). Billers: orders already sent to them
+ * as a Direct bill (Bills tab). The order's draft (new or the one left open), its lines and picker.
  */
 export async function openDirectBillForOrder(orderId: number): Promise<OrderForDirectBill & { draft: DraftDetail }> {
-  const u = await requireAnyRole('admin')
-  const out = await openOrderDraft(db, { id: u.id, name: u.name }, Math.floor(Number(orderId)))
+  const u = await requireAnyRole('biller', 'admin')
+  const out = await openOrderDraft(db, { id: u.id, name: u.name }, Math.floor(Number(orderId)), { allowOpen: u.roles.includes('admin') })
   return { ...out, draft: await loadDraft(db, out.draftId) }
 }
 
