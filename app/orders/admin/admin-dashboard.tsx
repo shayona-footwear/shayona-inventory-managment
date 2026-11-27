@@ -6,7 +6,7 @@ import { useState, useTransition, useMemo, useEffect, useCallback, useRef } from
 import { useUrlFilters } from '@/lib/use-url-filters'
 import { useListKeys } from '@/lib/shortcuts/list'
 import { applyColumnFilters, FilterRow, FiltersButton, FilterSummary, type ColumnFilterDef, type FilterValues } from '@/components/column-filters'
-import { StatusPill, fmt, PageHeader, StatCard } from '../_components/shared'
+import { StatusPill, ChangeTag, fmt, PageHeader, StatCard } from '../_components/shared'
 import { adminAssignPicker, adminUnassignPicker, getOrderWithItems, getPickerAssignments, deleteOrder, getBillsForPrint } from '@/app/actions/orders'
 import { BillDetailCard } from '@/components/bill-detail-card'
 import { amountsFromLines, type BillAmounts } from '@/lib/billing/bill-amounts'
@@ -313,11 +313,7 @@ export function AdminDashboard({ stats, orders, pickers, embedded, readOnly = fa
                     <StatusPill status={detailOrder.status} />
                     {(() => {
                       const tag = orderTag(detailOrder.orderedAt, detailOrder.updatedAt)
-                      return tag === 'new'
-                        ? <span className="inline-flex items-center border-l-2 border-green-500 pl-1.5 pr-1 py-px text-[10px] font-medium text-green-600 dark:text-green-400 tracking-wide">NEW</span>
-                        : tag === 'updated'
-                          ? <span className="inline-flex items-center border-l-2 border-blue-400 pl-1.5 pr-1 py-px text-[10px] font-medium text-blue-500 dark:text-blue-400 tracking-wide">UPDATED</span>
-                          : null
+                      return <ChangeTag tag={tag} />
                     })()}
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
@@ -623,12 +619,7 @@ export function AdminDashboard({ stats, orders, pickers, embedded, readOnly = fa
                     <p className="font-mono text-xs font-semibold text-foreground">{order.orderNumber}</p>
                     <p className="text-sm font-medium text-foreground mt-0.5">{order.shopkeeperName}</p>
                     <div className="flex items-center gap-2 flex-wrap mt-0.5">
-                      {tag === 'new' && (
-                        <span className="inline-flex items-center border-l-2 border-green-500 pl-1.5 pr-1 py-px text-[10px] font-medium text-green-600 dark:text-green-400 tracking-wide">NEW</span>
-                      )}
-                      {tag === 'updated' && (
-                        <span className="inline-flex items-center border-l-2 border-blue-400 pl-1.5 pr-1 py-px text-[10px] font-medium text-blue-500 dark:text-blue-400 tracking-wide">UPDATED</span>
-                      )}
+                      <ChangeTag tag={tag} />
                       <span className="text-xs text-muted-foreground">
                         {tag === 'updated' ? fmt(order.updatedAt) : fmt(order.orderedAt)}
                       </span>
@@ -670,12 +661,7 @@ export function AdminDashboard({ stats, orders, pickers, embedded, readOnly = fa
                       <td className="px-4 py-3"><StatusPill status={order.status} /></td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          {tag === 'new' && (
-                            <span className="inline-flex items-center border-l-2 border-green-500 pl-1.5 pr-1 py-px text-[10px] font-medium text-green-600 dark:text-green-400 tracking-wide">NEW</span>
-                          )}
-                          {tag === 'updated' && (
-                            <span className="inline-flex items-center border-l-2 border-blue-400 pl-1.5 pr-1 py-px text-[10px] font-medium text-blue-500 dark:text-blue-400 tracking-wide">UPDATED</span>
-                          )}
+                          <ChangeTag tag={tag} />
                           <span className="text-muted-foreground text-xs">
                             {tag === 'updated' ? fmt(order.updatedAt) : fmt(order.orderedAt)}
                           </span>

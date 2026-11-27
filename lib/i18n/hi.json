@@ -1340,8 +1340,6 @@
   "{0} lines": "{0} लाइन",
   "Start over?": "फिर से शुरू करें?",
   "This order and its draft will be removed from this phone.": "यह ऑर्डर और इसका ड्राफ़्ट इस फ़ोन से हट जाएगा।",
-  "NEW": "नया",
-  "UPDATED": "बदला गया",
   "Available": "उपलब्ध",
   "Pending orders nobody has claimed": "बाकी ऑर्डर जो किसी ने नहीं लिए",
   "Pairs to pack": "पैक करने को जोड़ी",
@@ -1525,5 +1523,7 @@
   "Who picked it?": "किसने पिक किया?",
   "Choose the picker…": "पिकर चुनें…",
   "Choose who picked the goods.": "चुनें कि माल किसने पिक किया।",
-  "Could not save the draft on this phone.": "इस फ़ोन पर ड्राफ़्ट सेव नहीं हो सका।"
+  "Could not save the draft on this phone.": "इस फ़ोन पर ड्राफ़्ट सेव नहीं हो सका।",
+  "Updated": "बदला गया",
+  "To confirm": "पुष्टि बाकी"
 }

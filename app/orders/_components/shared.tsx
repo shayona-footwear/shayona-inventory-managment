@@ -27,11 +27,31 @@ export const ROLE_BADGE: Record<string, { label: string; color: string }> = {
   user:       { label: 'No Role',     color: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' },
 }
 
+/** Status dot colour (owner, 27 Nov 2026: the old filled pills did not suit the new look). */
+const STATUS_DOT: Record<string, string> = {
+  to_confirm: 'bg-amber-400', pending: 'bg-amber-400', assigned: 'bg-blue-500', packed: 'bg-violet-500',
+  billed: 'bg-sky-400', dispatched: 'bg-orange-500', delivered: 'bg-emerald-500', cancelled: 'bg-red-500', out_of_stock: 'bg-red-500',
+}
+
+/** Order status: a coloured dot and the word in a thin outline chip. */
 export function StatusPill({ status }: { status: string }) {
-  const s = STATUS_BADGE[status] ?? { label: status, color: 'bg-gray-100 text-gray-600' }
+  const label = STATUS_BADGE[status]?.label ?? status
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${s.color}`}>
-      {s.label}
+    <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-foreground/80">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT[status] ?? 'bg-muted-foreground'}`} aria-hidden />
+      {label}
+    </span>
+  )
+}
+
+/** New / Updated on an order row: a small dot and the word, no box. */
+export function ChangeTag({ tag }: { tag: 'new' | 'updated' | null | undefined }) {
+  if (!tag) return null
+  const on = tag === 'new'
+  return (
+    <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${on ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${on ? 'bg-emerald-500' : 'bg-sky-500'}`} aria-hidden />
+      {on ? 'New' : 'Updated'}
     </span>
   )
 }

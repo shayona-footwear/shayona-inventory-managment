@@ -6,7 +6,7 @@ import { mergeMatrix, matrixPairs } from '@/lib/orders/order-lines'
 import { PaperEstimate } from '@/components/orders/paper-estimate'
 import { useState, useTransition, useRef, useEffect, useMemo, useId, useCallback, forwardRef, useImperativeHandle, Fragment } from 'react'
 import { useAutoRefresh } from '@/lib/use-auto-refresh'
-import { StatusPill, fmt, PageHeader, StatButton, SegTabs, SidePanel, isInProgress, type SegTab } from '../_components/shared'
+import { StatusPill, ChangeTag, fmt, PageHeader, StatButton, SegTabs, SidePanel, isInProgress, type SegTab } from '../_components/shared'
 import { createOrder, updateOrder, cancelOrder, getOlderSalesmanOrders, getSalesmanOrderWithItems, salesmanAssignPicker, sendToBilling } from '@/app/actions/orders'
 import { PageNav } from '@/components/page-nav'
 import { useShowMore } from '@/components/show-more'
@@ -1832,12 +1832,7 @@ export function SalesmanDashboard({ orders: recentOrders, userName, userId, embe
                       <span className="font-mono" data-no-translate>{order.orderNumber}</span>
                       <span aria-hidden>·</span>
                       <span>{tag === 'updated' ? fmt(order.updatedAt) : fmt(order.orderedAt)}</span>
-                      {tag === 'new' && (
-                        <span className="rounded bg-green-100 px-1.5 py-px text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">NEW</span>
-                      )}
-                      {tag === 'updated' && (
-                        <span className="rounded bg-blue-100 px-1.5 py-px text-[10px] font-semibold text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">UPDATED</span>
-                      )}
+                      <ChangeTag tag={tag} />
                       {uniqueSalesmen.length > 1 && order.salesmanName && (
                         <span className="truncate">{`· ${order.salesmanName}`}</span>
                       )}
