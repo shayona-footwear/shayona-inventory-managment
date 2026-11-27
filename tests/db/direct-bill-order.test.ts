@@ -38,7 +38,7 @@ describe('direct bill of an order from its draft (integration)', { skip: !harnes
   test('the order\'s draft: one per order, carried on, kept out of the Direct Billing drafts list', async () => {
     const a = await openOrderDraft(h.db, admin, orderId)
     assert.equal(a.order.retailerId, 'V901')
-    assert.deepEqual(a.items.map(i => [i.sizeNumber, i.quantityOrdered]), [['6', 2], ['7', 1]])
+    assert.deepEqual(a.items.map(i => [i.sizeNumber, i.quantityOrdered, i.colourCode]), [['6', 2, 'WHWH'], ['7', 1, 'WHWH']]) // colour code from the master
     const b = await openOrderDraft(h.db, admin, orderId)
     assert.equal(b.draftId, a.draftId)
     assert.equal((await listOpenDrafts(h.db)).some(d => d.id === a.draftId), false)
@@ -46,13 +46,15 @@ describe('direct bill of an order from its draft (integration)', { skip: !harnes
 
   test('billing bills the order itself; received pairs per line; extras billed; no new order', async () => {
     const { draftId } = await openOrderDraft(h.db, admin, orderId)
-    for (const raw of [BOX, BOX_2, BOX_SIZE_8]) assert.equal((await addDraftScan(h.db, admin, draftId, raw, randomUUID())).status, 'added')
+    // A black box of the same article and size 6: not the ordered White colour, so billed as an extra.
+    const BLACK_6 = 'A1PUGN42G-BKBK0006-0726R10MA0-339.50-1010-BK77A-1006101790'
+    for (const raw of [BOX, BOX_2, BOX_SIZE_8, BLACK_6]) assert.equal((await addDraftScan(h.db, admin, draftId, raw, randomUUID())).status, 'added')
     await assert.rejects(generateDirectBill(h.db, admin, draftId, { shopkeeperName: 'Test Shop' }), /picked/)
     await assert.rejects(generateDirectBill(h.db, admin, draftId, { shopkeeperName: 'Test Shop' }, { pickerId: 'u-admin', walkIn: { name: 'X', phone: '', paidMode: 'cash', discountPct: 0 } }), /walk-in/)
     const bill = await generateDirectBill(h.db, admin, draftId, { shopkeeperName: 'Anything typed', lineDiscPct: 30 }, { pickerId: 'u-admin' })
     assert.equal(bill.id, orderId)
     assert.equal(bill.orderNumber, 'ORD-T1')
-    assert.equal(bill.lines.reduce((t, l) => t + l.qty, 0), 3) // the extra size 8 is billed too
+    assert.equal(bill.lines.reduce((t, l) => t + l.qty, 0), 4) // the extra size 8 and the black box are billed too
     const [o] = await q<{ status: string; isEmergency: boolean; pickerId: string; retailerId: string; shopkeeperName: string }>(sql`
       SELECT status, "isEmergency", "pickerId", "retailerId", "shopkeeperName" FROM orders WHERE id = ${orderId}`)
     assert.deepEqual(o, { status: 'billed', isEmergency: true, pickerId: 'u-admin', retailerId: 'V901', shopkeeperName: 'Test Shop' })
@@ -60,7 +62,7 @@ describe('direct bill of an order from its draft (integration)', { skip: !harnes
     assert.deepEqual(lines.map(l => [Number(l.quantityPacked), l.status]), [[2, 'packed'], [0, 'out_of_stock']])
     assert.equal(Number((await q<{ n: number }>(sql`SELECT count(*)::int n FROM orders`))[0].n), 1)
     assert.equal(Number((await q<{ n: number }>(sql`SELECT count(*)::int n FROM sale_bills WHERE "orderId" = ${orderId} AND status = 'active'`))[0].n), 1)
-    assert.equal(Number((await q<{ n: number }>(sql`SELECT count(*)::int n FROM bill_scans WHERE "orderId" = ${orderId} AND status = 'active'`))[0].n), 3)
+    assert.equal(Number((await q<{ n: number }>(sql`SELECT count(*)::int n FROM bill_scans WHERE "orderId" = ${orderId} AND status = 'active'`))[0].n), 4)
     const [d] = await q<{ status: string; orderId: number }>(sql`SELECT status, "orderId" FROM direct_bill_drafts WHERE id = ${draftId}`)
     assert.deepEqual([d.status, Number(d.orderId)], ['billed', orderId])
   })

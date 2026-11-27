@@ -24,6 +24,19 @@ describe('order receipt: boxes against the order', () => {
     assert.equal(r.received.get(3), 1)
     assert.deepEqual(r.extra, [{ label: 'SS0101S size 11', qty: 1 }])
   })
+  test('colour: a line whose colour has a code takes only boxes of that colour (WHITE BLACK ≠ BLACK WHITE)', () => {
+    const coloured = [
+      { id: 1, artNumber: 'FL-370', artCode: 'FL0370G', sizeNumber: '7', quantityOrdered: 2, colourCode: 'WHBK' },
+      { id: 2, artNumber: 'FL-370', artCode: 'FL0370G', sizeNumber: '8', quantityOrdered: 1, colourCode: null }, // colour has no code yet
+    ]
+    const r = matchBoxesToOrder(coloured, [
+      { articleCode: 'FL0370G', sizeLabel: '7', colourCode: 'BKWH' }, // wrong colour
+      { articleCode: 'FL0370G', sizeLabel: '7', colourCode: 'WHBK' },
+      { articleCode: 'FL0370G', sizeLabel: '8', colourCode: 'BKWH' }, // no code on the line: article + size
+    ])
+    assert.deepEqual([...r.received], [[1, 1], [2, 1]])
+    assert.deepEqual(r.extra, [{ label: 'FL0370G BKWH size 7', qty: 1 }])
+  })
   test('lines that share article and size fill in order', () => {
     const two = [
       { id: 1, artNumber: 'FL-02', artCode: null, sizeNumber: '7', quantityOrdered: 1 },

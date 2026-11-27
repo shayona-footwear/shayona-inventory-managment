@@ -954,7 +954,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
     if (!order) return null
     const boxes = billLines.flatMap(l => l.boxCodes.flatMap(raw => {
       const b = readBoxLabel(raw)
-      return b.ok ? [{ articleCode: b.box.articleCode, sizeLabel: b.box.sizeLabel }] : []
+      return b.ok ? [{ articleCode: b.box.articleCode, sizeLabel: b.box.sizeLabel, colourCode: b.box.colourCode }] : []
     }))
     return matchBoxesToOrder(order.items, boxes)
   }, [order, billLines])

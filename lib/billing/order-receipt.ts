@@ -4,12 +4,15 @@
 // same article and size; a line with a saved article code needs that exact code (SS0101C 11 is not
 // SS0101S 11), otherwise the article name must match the box's code. Lines that share article and
 // size are filled in order. A box that fits no line, or comes after its lines are full, is an
-// extra: it is still billed. Colour is not checked (order lines do not keep colour codes).
+// extra: it is still billed.
+// Colour (owner, 27 Nov 2026: a BLACK WHITE box was taken for a WHITE BLACK line): a line whose
+// colour has a code in the article master needs a box of that colour code. A colour with no code
+// yet falls back to article + size.
 
 import { articlesMatch } from '../billing-verification'
 
-export interface ReceiptItem { id: number; artNumber: string; artCode?: string | null; sizeNumber: string | null; quantityOrdered: number }
-export interface ReceiptBox { articleCode: string; sizeLabel: string }
+export interface ReceiptItem { id: number; artNumber: string; artCode?: string | null; sizeNumber: string | null; quantityOrdered: number; colourCode?: string | null }
+export interface ReceiptBox { articleCode: string; sizeLabel: string; colourCode?: string | null }
 
 export interface OrderReceipt {
   /** Pairs received per order line (0 = none came). */
@@ -24,6 +27,7 @@ const code = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')
 
 function fits(item: ReceiptItem, box: ReceiptBox): boolean {
   if (String(item.sizeNumber ?? '').trim().toUpperCase() !== box.sizeLabel.trim().toUpperCase()) return false
+  if (item.colourCode && code(item.colourCode) !== code(box.colourCode ?? '')) return false
   return item.artCode ? code(item.artCode) === code(box.articleCode) : articlesMatch(item.artNumber.toUpperCase(), box.articleCode.toUpperCase())
 }
 
@@ -34,7 +38,7 @@ export function matchBoxesToOrder(items: readonly ReceiptItem[], boxes: readonly
     const line = items.find((i) => fits(i, box) && (received.get(i.id) ?? 0) < i.quantityOrdered)
     if (line) received.set(line.id, (received.get(line.id) ?? 0) + 1)
     else {
-      const label = `${box.articleCode} size ${box.sizeLabel}`
+      const label = `${box.articleCode}${box.colourCode ? ` ${box.colourCode}` : ''} size ${box.sizeLabel}`
       extras.set(label, (extras.get(label) ?? 0) + 1)
     }
   }

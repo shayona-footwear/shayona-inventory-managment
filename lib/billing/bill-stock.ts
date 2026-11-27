@@ -27,7 +27,6 @@ import { nextOrderNumber } from '@/lib/orders/order-number'
 import { matchBoxesToOrder, type ReceiptItem } from './order-receipt'
 import { recordReceivedPairs } from './received-pairs'
 import { billingPartyFor } from './sale-bill'
-import { orderItems } from '@/lib/db/schema'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NORM = (col: unknown) => sql`upper(regexp_replace(btrim(${col}), '\\s+', ' ', 'g'))`
@@ -85,10 +84,27 @@ export async function createDraft(db: DbOrTx, actor: Actor, header: Partial<Draf
   return row.id
 }
 
+/**
+ * An order's lines with the colour code of each line's colour (article master: same article code,
+ * or same name when the line has no code; same colour name). None when the colour has no code yet.
+ * One query. Used to check a box's colour against the line (lib/billing/order-receipt.ts).
+ */
+async function orderLinesWithColour(db: DbOrTx, orderId: number): Promise<OrderForDirectBill['items']> {
+  const r = await db.execute<{ id: number; artNumber: string; artCode: string | null; colorNumber: string | null; sizeNumber: string | null; quantityOrdered: number; colourCode: string | null }>(sql`
+    SELECT i.id, i."artNumber", i."artCode", i."colorNumber", i."sizeNumber", i."quantityOrdered",
+      (SELECT nullif(btrim(a."colorCode"), '') FROM articles a
+        WHERE (CASE WHEN nullif(btrim(i."artCode"), '') IS NOT NULL THEN upper(a."artCode") = upper(btrim(i."artCode"))
+                    ELSE upper(a."artName") = upper(btrim(i."artNumber")) END)
+          AND upper(btrim(a.color)) = upper(btrim(i."colorNumber")) AND btrim(a."colorCode") <> ''
+        ORDER BY a.active DESC, a.id LIMIT 1) AS "colourCode"
+    FROM order_items i WHERE i."orderId" = ${orderId} ORDER BY i.id`)
+  return r.rows.map((x) => ({ ...x, id: Number(x.id), quantityOrdered: Number(x.quantityOrdered) }))
+}
+
 export interface OrderForDirectBill {
   draftId: number
   order: { id: number; orderNumber: string; shopkeeperName: string; shopkeeperPhone: string | null; shopkeeperAddress: string | null; pickerId: string | null; retailerId: string | null; taxType: TaxType | null }
-  items: (ReceiptItem & { colorNumber: string | null })[]
+  items: (ReceiptItem & { colorNumber: string | null; colourCode: string | null })[]
 }
 
 /**
@@ -116,10 +132,7 @@ export async function openOrderDraft(db: DbOrTx, actor: Actor, orderId: number, 
   if (!sent && !(notSent && opts.allowOpen)) {
     throw new Error(notSent ? 'Only an admin can Direct bill an order that is not sent to billing.' : `This order is ${o.status} — it cannot be Direct billed now.`)
   }
-  const items = await db.select({
-    id: orderItems.id, artNumber: orderItems.artNumber, artCode: orderItems.artCode, colorNumber: orderItems.colorNumber,
-    sizeNumber: orderItems.sizeNumber, quantityOrdered: orderItems.quantityOrdered,
-  }).from(orderItems).where(eq(orderItems.orderId, orderId)).orderBy(orderItems.id)
+  const items = await orderLinesWithColour(db, orderId)
   const [open] = await db.select({ id: directBillDrafts.id }).from(directBillDrafts)
     .where(and(eq(directBillDrafts.orderId, orderId), eq(directBillDrafts.status, 'open'))).orderBy(directBillDrafts.id).limit(1)
   const draftId = open?.id ?? await createDraft(db, actor, {
@@ -467,9 +480,8 @@ async function billOrderFromDraft(
   await tx.execute(sql`UPDATE bill_scans SET "orderId" = ${orderId}, "orderNumber" = ${o.orderNumber} WHERE "draftId" = ${draftId} AND status = 'active'`)
   const stock = await postOrderScans(tx, actor, orderId, o.orderNumber)
   // Pairs received per order line, from the boxes on the bill.
-  const items = await tx.select({ id: orderItems.id, artNumber: orderItems.artNumber, artCode: orderItems.artCode, sizeNumber: orderItems.sizeNumber, quantityOrdered: orderItems.quantityOrdered })
-    .from(orderItems).where(eq(orderItems.orderId, orderId)).orderBy(orderItems.id)
-  const boxes = scans.flatMap((sc) => { const l = readBoxLabel(sc.raw); return l.ok ? [{ articleCode: l.box.articleCode, sizeLabel: l.box.sizeLabel }] : [] })
+  const items = await orderLinesWithColour(tx, orderId)
+  const boxes = scans.flatMap((sc) => { const l = readBoxLabel(sc.raw); return l.ok ? [{ articleCode: l.box.articleCode, sizeLabel: l.box.sizeLabel, colourCode: l.box.colourCode }] : [] })
   const receipt = matchBoxesToOrder(items, boxes)
   await recordReceivedPairs(tx, actor, orderId, items.map((i) => ({ itemId: i.id, qty: receipt.received.get(i.id) ?? 0 })))
   await tx.update(directBillDrafts).set({ ...h, shopkeeperName: o.shopkeeperName, lineDiscPct: String(h.lineDiscPct), status: 'billed', closedAt: sql`now()`, updatedAt: sql`now()` })
