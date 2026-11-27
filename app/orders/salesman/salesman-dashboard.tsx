@@ -7,7 +7,11 @@ import { PaperEstimate } from '@/components/orders/paper-estimate'
 import { useState, useTransition, useRef, useEffect, useMemo, useId, useCallback, forwardRef, useImperativeHandle, Fragment } from 'react'
 import { useAutoRefresh } from '@/lib/use-auto-refresh'
 import { StatusPill, ChangeTag, fmt, PageHeader, StatButton, SegTabs, SidePanel, isInProgress, type SegTab } from '../_components/shared'
-import { createOrder, updateOrder, cancelOrder, getOlderSalesmanOrders, getSalesmanOrderWithItems, salesmanAssignPicker, sendToBilling } from '@/app/actions/orders'
+import { createOrder, updateOrder, cancelOrder, getOlderSalesmanOrders, getSalesmanOrderWithItems, salesmanAssignPicker } from '@/app/actions/orders'
+import { BillingScannerPage } from '@/components/billing-scanner-page'
+import { getBillTemplate } from '@/app/actions/bill-template'
+import { templateRates } from '@/lib/bill-template'
+import type { BillRates } from '@/lib/billing/bill-totals'
 import { PageNav } from '@/components/page-nav'
 import { useShowMore } from '@/components/show-more'
 import { fuzzyFilter } from '@/lib/fuzzy'
@@ -916,26 +920,33 @@ export function SalesmanDashboard({ orders: recentOrders, userName, userId, embe
 
   // Printing no longer assigns pickers (owner, 27 Nov 2026): pickers claim orders on their phone or are
   // assigned from the order's row; when an order has none, the biller names the picker when billing.
-  // One order from the Orders list (owner, 23 Nov 2026): Assign a picker, or ⚡ Direct bill (admin),
-  // which also names who picked the goods.
-  const [rowAction, setRowAction] = useState<{ order: ExistingOrder; mode: 'assign' | 'direct' } | null>(null)
+  // One order from the Orders list (owner, 23 Nov 2026): Assign a picker.
+  const [rowAction, setRowAction] = useState<{ order: ExistingOrder; mode: 'assign' } | null>(null)
+  // ⚡ Direct bill (admin; owner, 27 Nov 2026): the order is billed right here on the Direct Billing
+  // screen (components/billing-scanner-page.tsx with orderId), not sent to the biller's queue.
+  const [directOrder, setDirectOrder] = useState<ExistingOrder | null>(null)
+  const [billRates, setBillRates] = useState<BillRates | undefined>(undefined)
+  function openDirectBill(order: ExistingOrder) {
+    setDirectOrder(order)
+    if (!billRates) getBillTemplate().then(t => setBillRates(templateRates(t))).catch(() => {})
+  }
   const [rowPicker, setRowPicker] = useState('')
   const [rowError, setRowError] = useState('')
   const [rowSaving, startRowSave] = useTransition()
-  function openRowAction(order: ExistingOrder, mode: 'assign' | 'direct') {
+  function openRowAction(order: ExistingOrder, mode: 'assign') {
     setRowPicker(''); setRowError(''); setRowAction({ order, mode })
   }
   function saveRowAction() {
     if (!rowAction) return
-    if (!rowPicker) { setRowError(rowAction.mode === 'direct' ? 'Choose who picked the goods.' : 'Choose a picker.'); return }
-    const { order, mode } = rowAction
+    if (!rowPicker) { setRowError('Choose a picker.'); return }
+    const { order } = rowAction
     setRowError('')
     startRowSave(async () => {
       try {
-        const row = mode === 'direct' ? await sendToBilling(order.id, rowPicker) : await salesmanAssignPicker(order.id, rowPicker)
+        const row = await salesmanAssignPicker(order.id, rowPicker)
         keepSaved(row, order.salesmanName ?? null)
         const who = pickers.find(p => p.id === rowPicker)?.name ?? 'the picker'
-        setNotice(mode === 'direct' ? `${order.orderNumber} sent to the biller (picked by ${who}).` : `${order.orderNumber} assigned to ${who}.`)
+        setNotice(`${order.orderNumber} assigned to ${who}.`)
         setRowAction(null)
       } catch (e) {
         setRowError(e instanceof Error ? e.message : 'Could not save. Check the connection and try again.')
@@ -1847,7 +1858,7 @@ export function SalesmanDashboard({ orders: recentOrders, userName, userId, embe
                         {order.status === 'assigned' ? 'Reassign' : 'Assign'}
                       </button>
                       {canDirectBill && (
-                        <button type="button" onClick={() => openRowAction(order, 'direct')}
+                        <button type="button" onClick={() => openDirectBill(order)}
                           title="Direct bill — skip picking, straight to the biller"
                           aria-label={`Direct bill ${order.orderNumber}`}
                           className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-300 bg-amber-50 text-base text-amber-700 hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300 dark:hover:bg-amber-950/60">
@@ -2837,7 +2848,40 @@ export function SalesmanDashboard({ orders: recentOrders, userName, userId, embe
         )
       })()}
 
-      {/* ── One order: Assign picker / ⚡ Direct bill (who picked it) ── */}
+      {/* ── ⚡ Direct bill of one order: the Direct Billing screen, full screen (owner, 27 Nov 2026) ── */}
+      {directOrder && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-background" role="dialog" aria-modal="true" aria-label={`Direct bill ${directOrder.orderNumber}`}>
+          <DialogKeys onClose={() => setDirectOrder(null)} />
+          <div className="sticky top-0 z-40 flex items-center gap-3 border-b border-border bg-background/95 px-3 py-2.5 backdrop-blur sm:px-4">
+            <button type="button" onClick={() => setDirectOrder(null)} aria-label="Back to orders"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border hover:bg-muted">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-base font-bold">⚡ Direct bill</p>
+              <p className="truncate text-xs text-muted-foreground">Scans are saved as you go — closing keeps them for this order.</p>
+            </div>
+          </div>
+          <div className="mx-auto max-w-6xl px-3 py-3 sm:px-4">
+            <BillingScannerPage
+              key={directOrder.id}
+              orderId={directOrder.id}
+              vendors={[]}
+              articles={catalogue.articles.map(a => a.artNumber)}
+              pickers={pickers}
+              rateDefaults={billRates}
+              embedded
+              onBillGenerated={(res) => {
+                keepSaved({ ...directOrder, status: 'billed', updatedAt: new Date() }, directOrder.salesmanName ?? null)
+                setNotice(`${res.orderNumber} billed · bill ${res.billNo}${res.stock.unscanned_dispatch > 0 ? ` · ${res.stock.unscanned_dispatch} box(es) went out as Unscanned dispatch` : ''}`)
+                setDirectOrder(null)
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── One order: Assign picker ── */}
       {rowAction && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm"
@@ -2851,19 +2895,14 @@ export function SalesmanDashboard({ orders: recentOrders, userName, userId, embe
           >
             <div>
               <p id="row-action-title" className="text-lg font-bold text-foreground">
-                {rowAction.mode === 'direct' ? '⚡ Direct bill' : 'Assign picker'}
+                Assign picker
               </p>
               <p className="mt-0.5 truncate text-sm text-muted-foreground">
                 {rowAction.order.shopkeeperName} · <span className="font-mono" data-no-translate>{rowAction.order.orderNumber}</span>
               </p>
             </div>
-            {rowAction.mode === 'direct' && (
-              <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                The order skips the picking screen and goes to the biller&apos;s Bills tab. The biller scans the boxes; pairs not received are marked on the order.
-              </p>
-            )}
             <label className="block space-y-1.5">
-              <span className="text-sm font-medium text-foreground">{rowAction.mode === 'direct' ? 'Who picked it?' : 'Picker'}</span>
+              <span className="text-sm font-medium text-foreground">Picker</span>
               <select
                 autoFocus
                 value={rowPicker}
@@ -2882,7 +2921,7 @@ export function SalesmanDashboard({ orders: recentOrders, userName, userId, embe
               </button>
               <button type="submit" disabled={rowSaving}
                 className="flex-1 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-                {rowSaving ? 'Saving…' : rowAction.mode === 'direct' ? 'Send to biller' : 'Assign'}
+                {rowSaving ? 'Saving…' : 'Assign'}
               </button>
             </div>
           </form>

@@ -24,6 +24,10 @@ import { normalizeArticleValue } from '@/lib/article-utils'
 import { mainLocationId } from '@/lib/inventory/ledger'
 import { assertPickerChoice } from '@/lib/orders/pickers'
 import { nextOrderNumber } from '@/lib/orders/order-number'
+import { matchBoxesToOrder, type ReceiptItem } from './order-receipt'
+import { recordReceivedPairs } from './received-pairs'
+import { billingPartyFor } from './sale-bill'
+import { orderItems } from '@/lib/db/schema'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const NORM = (col: unknown) => sql`upper(regexp_replace(btrim(${col}), '\\s+', ' ', 'g'))`
@@ -73,12 +77,50 @@ function cleanHeader(h: Partial<DraftHeader>): DraftHeader {
   }
 }
 
-export async function createDraft(db: DbOrTx, actor: Actor, header: Partial<DraftHeader> = {}): Promise<number> {
+export async function createDraft(db: DbOrTx, actor: Actor, header: Partial<DraftHeader> = {}, orderId: number | null = null): Promise<number> {
   const h = cleanHeader(header)
   const [row] = await db.insert(directBillDrafts).values({
-    billerId: actor.id, billerName: actor.name, ...h, lineDiscPct: String(h.lineDiscPct),
+    billerId: actor.id, billerName: actor.name, ...h, lineDiscPct: String(h.lineDiscPct), orderId,
   }).returning({ id: directBillDrafts.id })
   return row.id
+}
+
+export interface OrderForDirectBill {
+  draftId: number
+  order: { id: number; orderNumber: string; shopkeeperName: string; shopkeeperPhone: string | null; shopkeeperAddress: string | null; pickerId: string | null; retailerId: string | null; taxType: TaxType | null }
+  items: (ReceiptItem & { colorNumber: string | null })[]
+}
+
+/**
+ * ⚡ Direct bill on an order (owner, 27 Nov 2026: bill it right there, on the Direct Billing screen).
+ * The order's open draft, or a new one tied to the order (drafts with an order stay out of the
+ * Direct Billing drafts list). Only pending or assigned orders. 3–4 statements.
+ */
+export async function openOrderDraft(db: DbOrTx, actor: Actor, orderId: number): Promise<OrderForDirectBill> {
+  const [o] = await db.select({
+    id: orders.id, orderNumber: orders.orderNumber, status: orders.status, shopkeeperName: orders.shopkeeperName,
+    shopkeeperPhone: orders.shopkeeperPhone, shopkeeperAddress: orders.shopkeeperAddress, pickerId: orders.pickerId,
+    // The order's retailer (else the exact name match, as billing does) and the bill type to start from.
+    retailerId: sql<string | null>`(SELECT x.id FROM retailers x
+      WHERE x.id = ${orders.retailerId} OR (${orders.retailerId} IS NULL AND lower(btrim(x."partyName")) = lower(btrim(${orders.shopkeeperName})))
+      ORDER BY (x.id = ${orders.retailerId}) DESC NULLS LAST LIMIT 1)`,
+    taxType: sql<TaxType | null>`(SELECT x."taxType" FROM retailers x
+      WHERE x.id = ${orders.retailerId} OR (${orders.retailerId} IS NULL AND lower(btrim(x."partyName")) = lower(btrim(${orders.shopkeeperName})))
+      ORDER BY (x.id = ${orders.retailerId}) DESC NULLS LAST LIMIT 1)`,
+  }).from(orders).where(eq(orders.id, orderId)).limit(1)
+  if (!o) throw new Error('Order not found.')
+  if (o.status !== 'pending' && o.status !== 'assigned') throw new Error(`This order is ${o.status} — only pending or assigned orders can be Direct billed.`)
+  const items = await db.select({
+    id: orderItems.id, artNumber: orderItems.artNumber, artCode: orderItems.artCode, colorNumber: orderItems.colorNumber,
+    sizeNumber: orderItems.sizeNumber, quantityOrdered: orderItems.quantityOrdered,
+  }).from(orderItems).where(eq(orderItems.orderId, orderId)).orderBy(orderItems.id)
+  const [open] = await db.select({ id: directBillDrafts.id }).from(directBillDrafts)
+    .where(and(eq(directBillDrafts.orderId, orderId), eq(directBillDrafts.status, 'open'))).orderBy(directBillDrafts.id).limit(1)
+  const draftId = open?.id ?? await createDraft(db, actor, {
+    shopkeeperName: o.shopkeeperName, shopkeeperPhone: o.shopkeeperPhone, shopkeeperAddress: o.shopkeeperAddress,
+  }, orderId)
+  const { status: _status, ...order } = o
+  return { draftId, order, items }
 }
 
 /** Open drafts of every biller, newest first. One query. */
@@ -87,7 +129,7 @@ export async function listOpenDrafts(db: DbOrTx): Promise<DraftSummary[]> {
     SELECT d.id, d."billerName", d."shopkeeperName", d."updatedAt",
            (SELECT count(*) FROM bill_scans b WHERE b."draftId" = d.id AND b.status = 'active')::int AS boxes,
            (SELECT coalesce(sum((l->>'qty')::int), 0) FROM jsonb_array_elements(d."manualLines") l)::int AS manual
-    FROM direct_bill_drafts d WHERE d.status = 'open' ORDER BY d."updatedAt" DESC LIMIT 50`)
+    FROM direct_bill_drafts d WHERE d.status = 'open' AND d."orderId" IS NULL ORDER BY d."updatedAt" DESC LIMIT 50`)
   return r.rows.map((x) => ({
     id: Number(x.id), billerName: String(x.billerName ?? ''), shopkeeperName: String(x.shopkeeperName ?? ''),
     boxes: Number(x.boxes), manualPairs: Number(x.manual), updatedAt: new Date(x.updatedAt as string).toISOString(),
@@ -332,8 +374,12 @@ export async function generateDirectBill(
   const h = cleanHeader(walk ? { ...header, shopkeeperName: walk.name, shopkeeperPhone: walk.phone || null } : header)
   if (!h.shopkeeperName) throw new Error('Select a retailer first.')
   return db.transaction(async (tx) => {
-    const [d] = await tx.select({ status: directBillDrafts.status }).from(directBillDrafts).where(eq(directBillDrafts.id, draftId)).for('update')
+    const [d] = await tx.select({ status: directBillDrafts.status, orderId: directBillDrafts.orderId }).from(directBillDrafts).where(eq(directBillDrafts.id, draftId)).for('update')
     if (!d || d.status !== 'open') throw new Error('This draft was already generated or discarded.')
+    if (d.orderId != null) {
+      if (walk) throw new Error('An order is billed to its retailer, not as a walk-in.')
+      return billOrderFromDraft(tx, actor, draftId, d.orderId, h, bill)
+    }
     const r = walk ? null : (await tx.execute<{ id: string; taxType: TaxType }>(sql`
       SELECT id, "taxType" FROM retailers WHERE lower(btrim("partyName")) = lower(btrim(${h.shopkeeperName})) ORDER BY id LIMIT 1`)).rows[0]
     if (!walk && !r) throw new Error(notInMasterMessage(h.shopkeeperName))
@@ -373,6 +419,60 @@ export async function generateDirectBill(
       taxType: frozen.taxType, totals: frozen.totals, retailerId: frozen.retailerId,
     }
   })
+}
+
+/**
+ * ⚡ Direct bill of an existing order from its draft (owner, 27 Nov 2026): the order itself is
+ * billed (no new order): its retailer, the boxes scanned on the draft and any hand-typed lines.
+ * Pairs received per order line are saved on the order (what did not come stays marked), worked out
+ * here from the boxes (lib/billing/order-receipt.ts). One transaction, ~15 statements.
+ */
+async function billOrderFromDraft(
+  tx: Tx, actor: Actor, draftId: number, orderId: number, h: DraftHeader,
+  bill: { taxType?: TaxType; pickerId?: string; rates?: BillRates; credit?: { allowed: boolean; requested: boolean } },
+): Promise<GeneratedBill> {
+  const o = await billingPartyFor(tx, orderId) // locks the order
+  if (!o) throw new Error('Order not found.')
+  if (o.status !== 'pending' && o.status !== 'assigned') throw new Error(`This order is ${o.status} — it cannot be Direct billed now.`)
+  if (!o.retailerId || !o.taxType) throw new Error(notInMasterMessage(o.shopkeeperName))
+  const held = await enforceCredit(tx, { retailerId: o.retailerId }, bill.credit ?? { allowed: false, requested: false })
+  if (held) {
+    await audit(tx, { actor, action: 'direct_bill.credit_override', entityType: 'order', entityId: orderId,
+      after: { retailerId: o.retailerId, overduePaise: held.overduePaise, creditDays: held.creditDays, oldest: held.overdue[0] ?? null } })
+  }
+  const pickerId = await assertPickerChoice(tx, bill.pickerId)
+  const scans = await tx.select({ articleCode: billScans.articleCode, mrp: billScans.mrp, raw: billScans.rawInput }).from(billScans)
+    .where(and(eq(billScans.draftId, draftId), eq(billScans.status, 'active')))
+  const lines = buildLines(scans, h.manualLines)
+  if (!lines.length) throw new Error('No items on this bill yet.')
+  const [row] = await tx.update(orders).set({
+    status: 'billed', isEmergency: true, pickerId, billerId: actor.id, retailerId: o.retailerId,
+    packedAt: sql`coalesce(${orders.packedAt}, now())`, billedAt: sql`now()`, updatedAt: sql`now()`,
+  }).where(eq(orders.id, orderId)).returning({ billedAt: orders.billedAt })
+  await tx.delete(billLines).where(eq(billLines.orderId, orderId))
+  await tx.insert(billLines).values(lines.map((l) => ({ orderId, artNumber: l.artNumber, mrp: String(l.mrp), qty: l.qty, lineDiscPct: String(h.lineDiscPct) })))
+  const frozen = await freezeSaleBill(tx, actor, {
+    orderId, source: 'direct', lines, lineDiscPct: h.lineDiscPct,
+    party: { retailerId: o.retailerId, taxType: bill.taxType ?? o.taxType }, rates: bill.rates,
+  })
+  await applyAdvance(tx, actor, o.retailerId, frozen.saleBillId)
+  await stampBillLineHsn(tx, orderId)
+  await tx.execute(sql`UPDATE bill_scans SET "orderId" = ${orderId}, "orderNumber" = ${o.orderNumber} WHERE "draftId" = ${draftId} AND status = 'active'`)
+  const stock = await postOrderScans(tx, actor, orderId, o.orderNumber)
+  // Pairs received per order line, from the boxes on the bill.
+  const items = await tx.select({ id: orderItems.id, artNumber: orderItems.artNumber, artCode: orderItems.artCode, sizeNumber: orderItems.sizeNumber, quantityOrdered: orderItems.quantityOrdered })
+    .from(orderItems).where(eq(orderItems.orderId, orderId)).orderBy(orderItems.id)
+  const boxes = scans.flatMap((sc) => { const l = readBoxLabel(sc.raw); return l.ok ? [{ articleCode: l.box.articleCode, sizeLabel: l.box.sizeLabel }] : [] })
+  const receipt = matchBoxesToOrder(items, boxes)
+  await recordReceivedPairs(tx, actor, orderId, items.map((i) => ({ itemId: i.id, qty: receipt.received.get(i.id) ?? 0 })))
+  await tx.update(directBillDrafts).set({ ...h, shopkeeperName: o.shopkeeperName, lineDiscPct: String(h.lineDiscPct), status: 'billed', closedAt: sql`now()`, updatedAt: sql`now()` })
+    .where(eq(directBillDrafts.id, draftId))
+  await audit(tx, { actor, action: 'direct_bill.generated', entityType: 'order', entityId: orderId,
+    after: { orderNumber: o.orderNumber, billNo: frozen.billNo, draftId, pickerId, boxes: scans.length, stock, fromOrder: true, extra: receipt.extra } })
+  return {
+    id: orderId, orderNumber: o.orderNumber, billNo: frozen.billNo, lines, stock, billedAt: new Date(row?.billedAt ?? Date.now()).toISOString(),
+    taxType: frozen.taxType, totals: frozen.totals, retailerId: frozen.retailerId,
+  }
 }
 
 // ── Order invoices (Invoices tab) ─────────────────────────────────────────────

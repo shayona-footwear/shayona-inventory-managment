@@ -17,10 +17,12 @@ import { isValidWarehouseQr, parseQr, type ParsedQr } from '@/lib/qr-parser'
 import { PageNav } from '@/components/page-nav'
 import { NewArticleDialog } from '@/components/scanner/new-article-dialog'
 import {
-  discardDirectBillDraft, generateDirectBillFromDraft, getOpenDirectBillDrafts, openDirectBillDraft,
+  discardDirectBillDraft, generateDirectBillFromDraft, getOpenDirectBillDrafts, openDirectBillDraft, openDirectBillForOrder,
   removeFromDirectBill, saveDirectBillDraft, scanIntoDirectBill, startDirectBillDraft,
 } from '@/app/actions/billing'
-import type { DraftHeader, DraftSummary, GeneratedBill, MasterMatch } from '@/lib/billing/bill-stock'
+import type { DraftDetail, DraftHeader, DraftSummary, GeneratedBill, MasterMatch, OrderForDirectBill } from '@/lib/billing/bill-stock'
+import { matchBoxesToOrder } from '@/lib/billing/order-receipt'
+import { readBoxLabel } from '@/lib/billing/box-label'
 import { DialogKeys } from '@/components/dialog-keys'
 import { askConfirm } from '@/components/confirm-dialog'
 import { BillTypeChoice } from '@/components/bill-type-choice'
@@ -272,11 +274,17 @@ interface Props {
   rateDefaults?: BillRates
   /** Suppress the full-page chrome (header, sign-out) when embedded */
   embedded?: boolean
+  /**
+   * ⚡ Direct bill of an existing order (owner, 27 Nov 2026): the order's retailer is fixed, its
+   * ordered pairs are shown against the scanned boxes, and the bill is made on that order.
+   */
+  orderId?: number
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
-export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pickers = [], rateDefaults = DEFAULT_BILL_RATES, embedded }: Props) {
+export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pickers = [], rateDefaults = DEFAULT_BILL_RATES, embedded, orderId }: Props) {
+  const forOrder = orderId != null
 
   // Guard: vendors may briefly be undefined during SSR/hydration
   const safeVendors = vendors ?? []
@@ -287,7 +295,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
   // Direct Billing: who picked the goods (kept on this screen only; chosen again for a resumed draft).
   const [pickedBy, setPickedBy] = useState('')
   // Party balance / credit hold (payments, owner 22 Nov 2026): a held party needs an admin's "Allow".
-  const credit = useCreditStatus(onBillGenerated && selectedVendor && !selectedVendor.id.startsWith('draft-') ? { retailerId: selectedVendor.id } : null)
+  const credit = useCreditStatus(onBillGenerated && selectedVendor && !selectedVendor.id.startsWith('draft-') && !selectedVendor.id.startsWith('order-') ? { retailerId: selectedVendor.id } : null)
   const [allowHeld, setAllowHeld] = useState(false)
   useEffect(() => { setAllowHeld(false) }, [selectedVendor?.id])
   // Bill type (owner, 23 Nov 2026): from the retailer, changeable for this bill.
@@ -335,18 +343,45 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
   const [pendingScans, setPendingScans] = useState(0)
 
   function refreshDrafts() {
-    if (!directBill) return
+    if (!directBill || forOrder) return
     getOpenDirectBillDrafts().then(setDrafts).catch(() => {})
   }
   useEffect(() => {
     refreshDrafts()
   }, [])
 
+  // ── ⚡ Direct bill of an order: the order, its lines and its draft (left open = carried on) ──
+  const [order, setOrder] = useState<OrderForDirectBill | null>(null)
+  const [orderError, setOrderError] = useState('')
+  const orderVendor = useMemo<BillingVendor | null>(() => order ? {
+    id: order.order.retailerId ?? `order-${order.order.id}`, name: order.order.shopkeeperName, code: null,
+    phone: order.order.shopkeeperPhone, address: order.order.shopkeeperAddress, taxType: order.order.taxType ?? 'intra_state',
+  } : null, [order])
+  useEffect(() => {
+    if (orderId == null) return
+    let live = true
+    openDirectBillForOrder(orderId).then((r) => {
+      if (!live) return
+      setOrder(r)
+      draftIdRef.current = r.draftId
+      draftPromiseRef.current = Promise.resolve(r.draftId)
+      setDraftId(r.draftId)
+      applyDraft(r.draft, false)
+      chooseVendor({
+        id: r.order.retailerId ?? `order-${r.order.id}`, name: r.order.shopkeeperName, code: null,
+        phone: r.order.shopkeeperPhone, address: r.order.shopkeeperAddress, taxType: r.order.taxType ?? 'intra_state',
+      })
+      setPickedBy(r.order.pickerId ?? '')
+      if (r.draft.scans.length) showSuccess(`Carried on: ${r.draft.scans.length} box(es) already scanned for this order`)
+    }).catch((e) => { if (live) setOrderError(errMsg(e)) })
+    return () => { live = false }
+  }, [orderId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   /** The server draft for this bill, created on first need (one request even if called twice). */
   function ensureDraft(): Promise<number> {
     if (draftIdRef.current) return Promise.resolve(draftIdRef.current)
     if (!draftPromiseRef.current) {
-      draftPromiseRef.current = startDirectBillDraft({})
+      draftPromiseRef.current = (orderId != null ? openDirectBillForOrder(orderId).then((r) => r.draftId) : startDirectBillDraft({}))
         .then((id) => { draftIdRef.current = id; setDraftId(id); return id })
         .catch((e) => { draftPromiseRef.current = null; throw e })
     }
@@ -419,10 +454,11 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
     articleNotedRef.current = new Set()
     commitLines([])
     setTouched({})
-    chooseVendor(null)
+    // An order keeps its retailer and picker; a fresh Direct bill starts empty.
+    if (forOrder) { chooseVendor(orderVendor); setPickedBy(order?.order.pickerId ?? '') }
+    else { chooseVendor(null); setPickedBy('') }
     toggleWalkIn(false)
     setRateEdits({})
-    setPickedBy('')
     setLineDiscPct(30)
     draftIdRef.current = null
     draftPromiseRef.current = null
@@ -434,6 +470,21 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
     if (pendingScans > 0) { showWarning('Still saving scans — try again in a moment.'); return }
     try {
       const d = await openDirectBillDraft(id)
+      draftIdRef.current = id
+      draftPromiseRef.current = Promise.resolve(id)
+      setDraftId(id)
+      applyDraft(d, true)
+      showSuccess(`Draft resumed: ${d.scans.length} boxes`)
+    } catch (e) {
+      showError(errMsg(e))
+      refreshDrafts()
+    }
+  }
+
+  /** Put a saved draft on the screen: its boxes and hand-typed lines, retailer and discount. */
+  function applyDraft(d: DraftDetail, setVendor: boolean) {
+    {
+      const id = d.id
       const lines: BillLine[] = []
       // Saved order of scans: the line scanned last shows first on screen.
       const ranks: Record<string, number> = {}
@@ -451,20 +502,15 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
         put(p?.articleCode || sc.articleCode, p?.mrp ?? sc.mrp ?? 0, p?.division ?? '', 1, sc.raw, sc.inStock)
       }
       for (const m of d.manualLines) put(m.artNumber, m.mrp, '', m.qty, null, true)
-      draftIdRef.current = id
-      draftPromiseRef.current = Promise.resolve(id)
-      setDraftId(id)
       setTouched(ranks)
       commitLines(lines)
-      const v = safeVendors.find((x) => x.name === d.shopkeeperName)
-        ?? (d.shopkeeperName ? { id: `draft-${id}`, name: d.shopkeeperName, code: null, phone: d.shopkeeperPhone, address: d.shopkeeperAddress, taxType: 'intra_state' as const } : null)
-      if (v) toggleWalkIn(false)
-      chooseVendor(v)
+      if (setVendor) {
+        const v = safeVendors.find((x) => x.name === d.shopkeeperName)
+          ?? (d.shopkeeperName ? { id: `draft-${id}`, name: d.shopkeeperName, code: null, phone: d.shopkeeperPhone, address: d.shopkeeperAddress, taxType: 'intra_state' as const } : null)
+        if (v) toggleWalkIn(false)
+        chooseVendor(v)
+      }
       setLineDiscPct(d.lineDiscPct)
-      showSuccess(`Draft resumed: ${d.scans.length} boxes`)
-    } catch (e) {
-      showError(errMsg(e))
-      refreshDrafts()
     }
   }
 
@@ -810,6 +856,14 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
     // Direct Billing: generate from the saved draft (takes the boxes out of stock), then Receipts.
     if (onBillGenerated) {
       if (pendingScans > 0) { showWarning('Still saving scans — try again in a moment.'); return }
+      // ⚡ Order: different from the order → ask first (short pairs stay marked on the order).
+      if (receipt && (receipt.short.length || receipt.extra.length)) {
+        const parts = [
+          receipt.short.length ? `${orderedPairs - receivedPairs} pair(s) short on ${receipt.short.length} line(s) — they stay marked on the order` : '',
+          extraBoxes ? `${extraBoxes} box(es) not on the order — billed as extra` : '',
+        ].filter(Boolean)
+        if (!(await askConfirm({ message: `This bill differs from the order: ${parts.join('; ')}. Bill it like this?`, confirmLabel: 'Bill it' }))) return
+      }
       setIsSaving(true)
       try {
         const id = await ensureDraft()
@@ -820,6 +874,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
         onBillGenerated(walkIn
           ? { ...res, shopkeeperName: walkName.trim(), shopkeeperPhone: walkPhone.trim() || null, shopkeeperAddress: null }
           : { ...res, shopkeeperName: header.shopkeeperName, shopkeeperPhone: header.shopkeeperPhone, shopkeeperAddress: header.shopkeeperAddress })
+        if (forOrder) return // the order is billed; the screen closes
         resetLocal()
         if (res.stock.unscanned_dispatch > 0) showWarning(`Bill ${res.orderNumber} saved. ${res.stock.unscanned_dispatch} box(es) went out as Unscanned dispatch.`)
       } catch (e) {
@@ -894,6 +949,19 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
 
   const otherDrafts = drafts.filter(d => d.id !== draftId)
 
+  // ⚡ Order: ordered pairs against the boxes on the bill (same rule as the server, lib/billing/order-receipt.ts).
+  const receipt = useMemo(() => {
+    if (!order) return null
+    const boxes = billLines.flatMap(l => l.boxCodes.flatMap(raw => {
+      const b = readBoxLabel(raw)
+      return b.ok ? [{ articleCode: b.box.articleCode, sizeLabel: b.box.sizeLabel }] : []
+    }))
+    return matchBoxesToOrder(order.items, boxes)
+  }, [order, billLines])
+  const orderedPairs = order ? order.items.reduce((t, i) => t + i.quantityOrdered, 0) : 0
+  const receivedPairs = receipt ? [...receipt.received.values()].reduce((t, n) => t + n, 0) : 0
+  const extraBoxes = receipt ? receipt.extra.reduce((t, e) => t + e.qty, 0) : 0
+
   // ── Render ─────────────────────────────────────────────────────────────────
   // Designed for the biller (owner, 20 Nov 2026): the Scan box keeps the cursor so a USB / Bluetooth
   // scanner always lands in the bill; the bill, totals and Generate stay in view while scanning.
@@ -903,6 +971,8 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
   const needsPicker = directBill && !pickedBy
   const partyHint = walkIn
     ? (!walkName.trim() ? 'Type the customer\'s name.' : !walkPaid ? 'Choose how the customer paid: cash or UPI.' : !walkDiscOk ? 'Bill discount must be 0 to 100 %.' : '')
+    : forOrder && !order ? (orderError || 'Loading the order…')
+    : forOrder && !order?.order.retailerId ? `"${order?.order.shopkeeperName}" is not in the retailer master. Add the party in Master → Retailers, then bill.`
     : (!selectedVendor ? 'Choose the retailer to generate the bill.'
       : credit?.blocked && !allowHeld ? (credit.canOverride ? 'Credit hold: tick "Allow anyway" to bill this party.' : 'Credit hold: this party must pay first, or ask an admin.')
       : rated.error)
@@ -943,6 +1013,16 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
                     placeholder="Phone (optional)"
                     className="h-12 min-w-0 rounded-xl border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
                 </div>
+              ) : forOrder ? (
+                <div className="flex h-12 items-center gap-2.5 rounded-xl border border-border bg-muted/40 px-2.5">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-base text-amber-600 dark:text-amber-300" aria-hidden>⚡</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold text-foreground" data-no-translate>{order?.order.shopkeeperName ?? (orderError ? '—' : 'Loading the order…')}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {order ? <><span className="font-mono" data-no-translate>{order.order.orderNumber}</span>{` · ${orderedPairs} pairs ordered`}</> : ''}
+                    </span>
+                  </span>
+                </div>
               ) : !selectedVendor ? (
                 <SearchCombobox<BillingVendor>
                   id="vendor-search"
@@ -981,7 +1061,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
               <div className="min-w-0 basis-full"><CreditNote compact info={credit} allow={allowHeld} onAllow={setAllowHeld} /></div>
             )}
 
-            {directBill && (
+            {directBill && !forOrder && (
               <button type="button" aria-pressed={walkIn} onClick={() => toggleWalkIn(!walkIn)}
                 title="Walk-in customer: name only, without GST, pays now"
                 className={`h-12 shrink-0 rounded-xl border px-3 text-sm font-semibold ${walkIn ? 'border-amber-500 bg-amber-500/15 text-amber-800 dark:text-amber-200' : 'border-border hover:bg-muted'}`}>
@@ -1061,6 +1141,62 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
           </div>
         </section>
 
+        {forOrder && orderError && (
+          <p role="alert" className="rounded-xl border border-red-300 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-900 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200">{orderError}</p>
+        )}
+
+        {/* ⚡ Order: what was ordered against what is scanned (owner, 27 Nov 2026). */}
+        {order && receipt && (
+          <details open className="group rounded-2xl border border-border bg-card">
+            <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
+              <h2 className="text-base font-bold">Ordered vs scanned</h2>
+              <span className="text-sm tabular-nums text-muted-foreground">{`${receivedPairs} of ${orderedPairs} pairs`}</span>
+              {extraBoxes > 0 && <span className="text-xs font-semibold text-amber-700 dark:text-amber-400">{`+${extraBoxes} not on the order`}</span>}
+              <span className="flex-1" />
+              <span className="text-xs text-muted-foreground group-open:hidden">Show</span>
+              <span className="hidden text-xs text-muted-foreground group-open:inline">Hide</span>
+              <span className="basis-full">
+                <span className="block h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
+                  <span className={`block h-full rounded-full ${receivedPairs >= orderedPairs ? 'bg-emerald-500' : 'bg-primary'}`}
+                    style={{ width: `${orderedPairs ? Math.min(100, Math.round((receivedPairs / orderedPairs) * 100)) : 0}%` }} />
+                </span>
+              </span>
+            </summary>
+            <div className="max-h-64 overflow-y-auto border-t border-border">
+              <table className="w-full border-collapse text-sm">
+                <thead className="sticky top-0 bg-card">
+                  <tr className="text-xs text-muted-foreground">
+                    <th className="px-4 py-1.5 text-left font-medium">Article</th>
+                    <th className="px-2 py-1.5 text-left font-medium">Colour</th>
+                    <th className="px-2 py-1.5 text-left font-medium">Size</th>
+                    <th className="px-4 py-1.5 text-right font-medium">Scanned</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {order.items.map(i => {
+                    const got = receipt.received.get(i.id) ?? 0
+                    const tone = got >= i.quantityOrdered ? 'text-emerald-600 dark:text-emerald-400' : got > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+                    return (
+                      <tr key={i.id} className="border-t border-border/50">
+                        <td className="px-4 py-1.5 font-semibold" data-no-translate>{i.artNumber}</td>
+                        <td className="px-2 py-1.5 text-xs uppercase text-muted-foreground" data-no-translate>{i.colorNumber ?? '—'}</td>
+                        <td className="px-2 py-1.5 tabular-nums">{i.sizeNumber ?? '—'}</td>
+                        <td className={`px-4 py-1.5 text-right font-bold tabular-nums ${tone}`}>{`${got} / ${i.quantityOrdered}`}</td>
+                      </tr>
+                    )
+                  })}
+                  {receipt.extra.map(e => (
+                    <tr key={e.label} className="border-t border-border/50 bg-amber-500/5">
+                      <td colSpan={3} className="px-4 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400" data-no-translate>{`${e.label} — not on the order`}</td>
+                      <td className="px-4 py-1.5 text-right font-bold tabular-nums text-amber-700 dark:text-amber-400">{`+${e.qty}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        )}
+
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start">
           {/* ════════ The bill ════════ */}
           <section aria-labelledby="bill-heading" className="min-w-0 rounded-2xl border border-border bg-card">
@@ -1073,7 +1209,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
                   {pendingScans > 0 ? `Draft #${draftId} · saving…` : `Draft #${draftId} · saved`}
                 </span>
               )}
-              {directBill && (
+              {directBill && !forOrder && (
                 <button type="button" onClick={() => setDraftsOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-semibold hover:bg-muted">
                   Drafts{otherDrafts.length > 0 && <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-bold text-primary">{otherDrafts.length}</span>}
                 </button>
@@ -1189,7 +1325,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
               {generateHint && <p className="mb-2 text-xs text-amber-700 dark:text-amber-400">{generateHint}</p>}
               <button type="button" onClick={() => { void handlePrint().then(focusScan) }} disabled={!canGenerate}
                 className="h-12 w-full rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-                {isSaving ? 'Generating…' : onBillGenerated ? 'Generate bill → Receipts' : 'Generate & print bill'}
+                {isSaving ? 'Generating…' : forOrder ? 'Bill this order' : onBillGenerated ? 'Generate bill → Receipts' : 'Generate & print bill'}
               </button>
             </div>
             {billLines.length > 0 && (
@@ -1201,7 +1337,8 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
         </div>
 
         {/* Phones: totals and Generate stay at the bottom, just above the app's bottom menu bar (4rem). */}
-        <div className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-30 border-t border-border bg-background/95 px-3 py-2 backdrop-blur md:bottom-0 lg:hidden">
+        {/* ⚡ Order: the screen covers the app (and its menu bar), so the bar sits at the very bottom. */}
+        <div className={`fixed inset-x-0 z-30 border-t border-border bg-background/95 px-3 py-2 backdrop-blur md:bottom-0 lg:hidden ${forOrder ? 'bottom-0 pb-[max(0.5rem,env(safe-area-inset-bottom))]' : 'bottom-[calc(4rem+env(safe-area-inset-bottom))]'}`}>
           <div className="mx-auto flex max-w-3xl items-center gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-[11px] text-muted-foreground">{`Net payable · ${totalQty} box(es)`}</p>
@@ -1210,7 +1347,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
             </div>
             <button type="button" onClick={() => { void handlePrint() }} disabled={!canGenerate}
               className="h-12 shrink-0 rounded-xl bg-primary px-5 text-sm font-bold text-primary-foreground disabled:opacity-50">
-              {isSaving ? 'Generating…' : 'Generate bill'}
+              {isSaving ? 'Generating…' : forOrder ? 'Bill this order' : 'Generate bill'}
             </button>
           </div>
         </div>

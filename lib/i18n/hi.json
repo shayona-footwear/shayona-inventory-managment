@@ -1525,5 +1525,14 @@
   "Choose who picked the goods.": "चुनें कि माल किसने पिक किया।",
   "Could not save the draft on this phone.": "इस फ़ोन पर ड्राफ़्ट सेव नहीं हो सका।",
   "Updated": "बदला गया",
-  "To confirm": "पुष्टि बाकी"
+  "To confirm": "पुष्टि बाकी",
+  "Ordered vs scanned": "ऑर्डर बनाम स्कैन",
+  "Bill this order": "यह ऑर्डर बिल करें",
+  "Scans are saved as you go — closing keeps them for this order.": "स्कैन साथ-साथ सेव होते हैं — बंद करने पर भी इस ऑर्डर के लिए रहते हैं।",
+  "Loading the order…": "ऑर्डर लोड हो रहा है…",
+  "Scanned": "स्कैन हुए",
+  "{0} of {1} pairs": "{1} में से {0} जोड़ी",
+  "{0} · {1} pairs ordered": "{0} · {1} जोड़ी ऑर्डर",
+  "⚡ Direct bill": "⚡ डायरेक्ट बिल",
+  "Bill it": "बिल करें"
 }

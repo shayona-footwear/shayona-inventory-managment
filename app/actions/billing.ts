@@ -15,8 +15,8 @@ import { billLines, orders } from '@/lib/db/schema'
 import { requireAnyRole } from '@/lib/authz'
 import { hasPermission } from '@/lib/permissions'
 import {
-  addDraftScan, createDraft, discardDraft, generateDirectBill, listOpenDrafts, loadDraft, recordOrderScans, releaseOrderScans, removeDraftScans, saveDraftHeader,
-  type AddScanOutcome, type DraftDetail, type DraftHeader, type DraftSummary, type GeneratedBill, type StockOutCounts,
+  addDraftScan, createDraft, discardDraft, generateDirectBill, listOpenDrafts, loadDraft, openOrderDraft, recordOrderScans, releaseOrderScans, removeDraftScans, saveDraftHeader,
+  type AddScanOutcome, type DraftDetail, type DraftHeader, type DraftSummary, type GeneratedBill, type OrderForDirectBill, type StockOutCounts,
 } from '@/lib/billing/bill-stock'
 
 // Direct Billing (formerly "Emergency Bill") and order invoices. Every box a biller scans is
@@ -34,6 +34,16 @@ export async function getOpenDirectBillDrafts(): Promise<DraftSummary[]> {
 
 export async function startDirectBillDraft(header: Partial<DraftHeader> = {}): Promise<number> {
   return createDraft(db, await biller(), header)
+}
+
+/**
+ * ⚡ Direct bill on an order (admins, as before; owner 27 Nov 2026: bill it right there on the
+ * Direct Billing screen). The order's draft (new or the one left open), its lines and picker.
+ */
+export async function openDirectBillForOrder(orderId: number): Promise<OrderForDirectBill & { draft: DraftDetail }> {
+  const u = await requireAnyRole('admin')
+  const out = await openOrderDraft(db, { id: u.id, name: u.name }, Math.floor(Number(orderId)))
+  return { ...out, draft: await loadDraft(db, out.draftId) }
 }
 
 export async function openDirectBillDraft(draftId: number): Promise<DraftDetail> {
