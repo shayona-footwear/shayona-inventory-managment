@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { sql } from 'drizzle-orm'
 import { createHarness, harnessEnabled, type Harness } from './_harness'
-import { addDraftScan, generateDirectBill, listOpenDrafts, openOrderDraft } from '../../lib/billing/bill-stock'
+import { addDraftScan, createDraft, discardDraft, generateDirectBill, listOpenDrafts, loadDraft, openOrderDraft, saveDraftHeader } from '../../lib/billing/bill-stock'
 import type { Actor } from '../../lib/db/types'
 
 // Real labels: PUG-N42 White, MRP 339.50 — two boxes of size 6 and one of size 8.
@@ -65,6 +65,20 @@ describe('direct bill of an order from its draft (integration)', { skip: !harnes
     assert.equal(Number((await q<{ n: number }>(sql`SELECT count(*)::int n FROM bill_scans WHERE "orderId" = ${orderId} AND status = 'active'`))[0].n), 4)
     const [d] = await q<{ status: string; orderId: number }>(sql`SELECT status, "orderId" FROM direct_bill_drafts WHERE id = ${draftId}`)
     assert.deepEqual([d.status, Number(d.orderId)], ['billed', orderId])
+  })
+
+  test('boxes added by hand keep their size and colour on the draft (optional)', async () => {
+    const id = await createDraft(h.db, admin, { shopkeeperName: 'Test Shop' })
+    await saveDraftHeader(h.db, id, { shopkeeperName: 'Test Shop', manualLines: [
+      { artNumber: 'fl-370', mrp: 649, qty: 2, size: ' 7 ', colour: 'white black' },
+      { artNumber: 'FL-370', mrp: 649, qty: 1 },
+    ] })
+    const d = await loadDraft(h.db, id)
+    assert.deepEqual(d.manualLines, [
+      { artNumber: 'FL-370', mrp: 649, qty: 2, size: '7', colour: 'WHITE BLACK' },
+      { artNumber: 'FL-370', mrp: 649, qty: 1 },
+    ])
+    await discardDraft(h.db, admin, id)
   })
 
   test('a billed order cannot be Direct billed again', async () => {

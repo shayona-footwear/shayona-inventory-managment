@@ -613,7 +613,8 @@ export const cartonAssortments = pgTable('carton_assortments', {
 
 // --- Billing takes stock out (migration 0006) ---
 
-export interface DraftManualLine { artNumber: string; mrp: number; qty: number }
+/** A box added by hand (no QR). Size and colour are optional (owner, 28 Nov 2026); kept on the draft row. */
+export interface DraftManualLine { artNumber: string; mrp: number; qty: number; size?: string; colour?: string }
 
 /** A Direct Bill from its first scan until it is generated or discarded. */
 export const directBillDrafts = pgTable('direct_bill_drafts', {

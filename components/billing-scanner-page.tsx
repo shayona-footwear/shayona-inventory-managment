@@ -64,6 +64,18 @@ interface BillLine {
   boxCodes: string[]
   /** Boxes on this line that the warehouse never scanned into stock (Direct Billing). */
   notInStock: number
+  /** Boxes added by hand, with their size and colour when typed (owner, 28 Nov 2026). qty = boxCodes + these. */
+  hand: { size: string; colour: string; qty: number }[]
+}
+
+/** Add hand boxes to a line's list: same size and colour → one entry. */
+function addHand(hand: BillLine['hand'], size: string, colour: string, qty: number): BillLine['hand'] {
+  const i = hand.findIndex(h => h.size === size && h.colour === colour)
+  return i >= 0 ? hand.map((h, n) => (n === i ? { ...h, qty: h.qty + qty } : h)) : [...hand, { size, colour, qty }]
+}
+/** "2 by hand · size 7 BLACK, 1 by hand" for the bill line. */
+function handLabel(hand: BillLine['hand']): string {
+  return hand.map(h => `${h.qty} by hand${h.size || h.colour ? ` · ${[h.size && `size ${h.size}`, h.colour].filter(Boolean).join(' ')}` : ''}`).join(', ')
 }
 
 function lineKey(art: string, mrp: number) {
@@ -493,7 +505,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
         const key = lineKey(art, mrp)
         ranks[key] = ++seq
         let l = lines.find((x) => x.key === key)
-        if (!l) { l = { key, artNumber: art, mrp, division, qty: 0, boxCodes: [], notInStock: 0 }; lines.push(l) }
+        if (!l) { l = { key, artNumber: art, mrp, division, qty: 0, boxCodes: [], notInStock: 0, hand: [] }; lines.push(l) }
         l.qty += qty
         if (raw) { l.boxCodes.push(raw); if (!inStock) l.notInStock++ }
       }
@@ -501,7 +513,11 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
         const p = isValidWarehouseQr(sc.raw) ? parseQr(sc.raw) : null
         put(p?.articleCode || sc.articleCode, p?.mrp ?? sc.mrp ?? 0, p?.division ?? '', 1, sc.raw, sc.inStock)
       }
-      for (const m of d.manualLines) put(m.artNumber, m.mrp, '', m.qty, null, true)
+      for (const m of d.manualLines) {
+        put(m.artNumber, m.mrp, '', m.qty, null, true)
+        const l = lines.find(x => x.key === lineKey(m.artNumber, m.mrp))
+        if (l) l.hand = addHand(l.hand, m.size ?? '', m.colour ?? '', m.qty)
+      }
       setTouched(ranks)
       commitLines(lines)
       if (setVendor) {
@@ -578,6 +594,8 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
   const [manualArt, setManualArt] = useState('')
   const [manualMrp, setManualMrp] = useState('')
   const [manualQty, setManualQty] = useState<number | ''>(1)
+  const [manualSize, setManualSize] = useState('')
+  const [manualColour, setManualColour] = useState('')
 
   // Article search for manual entry
   const [artQuery, setArtQuery] = useState('')
@@ -625,8 +643,11 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
   async function decrementLine(key: string) {
     const line = billLinesRef.current.find(l => l.key === key)
     if (!line) return
-    if (line.qty > line.boxCodes.length) {
-      commitLines(billLinesRef.current.map(l => (l.key === key ? { ...l, qty: l.qty - 1 } : l)).filter(l => l.qty > 0))
+    if (line.hand.length) {
+      // A box added by hand goes first (the last one added).
+      const last = line.hand.length - 1
+      const hand = line.hand.map((h, n) => (n === last ? { ...h, qty: h.qty - 1 } : h)).filter(h => h.qty > 0)
+      commitLines(billLinesRef.current.map(l => (l.key === key ? { ...l, qty: l.qty - 1, hand } : l)).filter(l => l.qty > 0))
       return
     }
     const raw = line.boxCodes[line.boxCodes.length - 1]
@@ -657,7 +678,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
     const existing = prev.find(l => l.key === key)
     commitLines(existing
       ? prev.map(l => l.key === key ? { ...l, qty: l.qty + 1, boxCodes: [...l.boxCodes, rawQr] } : l)
-      : [...prev, { key, artNumber: art, mrp, division, qty: 1, boxCodes: [rawQr], notInStock: 0 }])
+      : [...prev, { key, artNumber: art, mrp, division, qty: 1, boxCodes: [rawQr], notInStock: 0, hand: [] }])
     showSuccess(existing ? `+1 box: ${art} @ ₹${mrp.toFixed(2)} (now ${(existing.qty + 1)} boxes)` : `Added: ${art} @ ₹${mrp.toFixed(2)}`)
     setLastAdded({ key, raw: rawQr })
     touchLine(key)
@@ -665,13 +686,13 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
     if (directBill) void persistScan(key, rawQr, art)
   }
 
-  function addManualLine(art: string, mrp: number, division: string, qty: number) {
+  function addManualLine(art: string, mrp: number, division: string, qty: number, size = '', colour = '') {
     const key = lineKey(art, mrp)
     const prev = billLinesRef.current
     const existing = prev.find(l => l.key === key)
     commitLines(existing
-      ? prev.map(l => l.key === key ? { ...l, qty: l.qty + qty } : l)
-      : [...prev, { key, artNumber: art, mrp, division, qty, boxCodes: [], notInStock: 0 }])
+      ? prev.map(l => l.key === key ? { ...l, qty: l.qty + qty, hand: addHand(l.hand, size, colour, qty) } : l)
+      : [...prev, { key, artNumber: art, mrp, division, qty, boxCodes: [], notInStock: 0, hand: [{ size, colour, qty }] }])
     touchLine(key)
     showSuccess(`Added ${qty}× ${art} @ ₹${mrp.toFixed(2)}`)
   }
@@ -825,8 +846,10 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
     const mrp = parseFloat(manualMrp) || 0
     const qty = Number(manualQty) || 1
     if (!art) { showError('Article number is required.'); return }
-    addManualLine(art, mrp, '', qty)
+    addManualLine(art, mrp, '', qty, manualSize.trim().toUpperCase(), manualColour.trim().toUpperCase())
     setManualQty(1)
+    setManualSize('')
+    setManualColour('')
     setManualArt('')
     setArtQuery('')
     setArtSelected(false)
@@ -912,7 +935,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
 
   // ── Direct Billing: keep the draft's retailer, discount and hand-typed lines saved ──
   const manualLinesForServer = useMemo(
-    () => billLines.map(l => ({ artNumber: l.artNumber, mrp: l.mrp, qty: l.qty - l.boxCodes.length })).filter(l => l.qty > 0),
+    () => billLines.flatMap(l => l.hand.map(h => ({ artNumber: l.artNumber, mrp: l.mrp, qty: h.qty, ...(h.size ? { size: h.size } : {}), ...(h.colour ? { colour: h.colour } : {}) }))).filter(l => l.qty > 0),
     [billLines],
   )
   function draftHeader(): DraftHeader {
@@ -1279,7 +1302,7 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
                             <span className="whitespace-nowrap text-sm font-bold text-foreground" data-no-translate>{line.artNumber}</span>
                             {isLast && <span className="ml-2 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">just scanned</span>}
                             {line.notInStock > 0 && <span className="block whitespace-nowrap text-[11px] text-amber-700 dark:text-amber-400" title="Not scanned into stock: goes out as Unscanned dispatch">{`${line.notInStock} not in stock`}</span>}
-                            {line.qty > line.boxCodes.length && <span className="block text-[11px] text-muted-foreground">{`${line.qty - line.boxCodes.length} added by hand`}</span>}
+                            {line.hand.length > 0 && <span className="block text-[11px] text-muted-foreground" data-no-translate>{handLabel(line.hand)}</span>}
                           </td>
                           <td className="whitespace-nowrap px-2 py-2.5 text-right text-muted-foreground tabular-nums">{line.mrp.toFixed(2)}</td>
                           <td className="px-2 py-2.5">
@@ -1413,6 +1436,14 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
                 <label className="text-sm font-medium">Boxes
                   <input type="number" min="1" value={manualQty} onChange={e => setManualQty(e.target.value === '' ? '' : parseInt(e.target.value) || 1)}
                     className="mt-1 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                </label>
+                <label className="text-sm font-medium">Size <span className="font-normal text-muted-foreground">(optional)</span>
+                  <input type="text" value={manualSize} onChange={e => setManualSize(e.target.value)} maxLength={20} autoComplete="off" placeholder="e.g. 7"
+                    className="mt-1 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                </label>
+                <label className="text-sm font-medium">Colour <span className="font-normal text-muted-foreground">(optional)</span>
+                  <input type="text" value={manualColour} onChange={e => setManualColour(e.target.value)} maxLength={40} autoComplete="off" placeholder="e.g. BLACK"
+                    className="mt-1 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm uppercase focus:outline-none focus:ring-2 focus:ring-ring" />
                 </label>
               </div>
               <button type="submit" className="h-12 w-full rounded-xl bg-primary text-sm font-bold text-primary-foreground hover:bg-primary/90">Add to bill</button>

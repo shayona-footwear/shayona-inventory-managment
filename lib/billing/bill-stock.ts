@@ -68,11 +68,18 @@ function cleanHeader(h: Partial<DraftHeader>): DraftHeader {
     shopkeeperPhone: h.shopkeeperPhone ? String(h.shopkeeperPhone).trim().slice(0, 40) : null,
     shopkeeperAddress: h.shopkeeperAddress ? String(h.shopkeeperAddress).trim().slice(0, 500) : null,
     lineDiscPct: Number.isFinite(pct) ? Math.min(100, Math.max(0, pct)) : 30,
-    manualLines: lines.slice(0, 500).map((l) => ({
-      artNumber: normalizeArticleValue(String(l.artNumber ?? '')).slice(0, 60),
-      mrp: Math.max(0, Math.round(Number(l.mrp) * 100) / 100 || 0),
-      qty: Math.max(0, Math.floor(Number(l.qty) || 0)),
-    })).filter((l) => l.artNumber && l.qty > 0),
+    manualLines: lines.slice(0, 500).map((l) => {
+      // Size and colour of a box added by hand: optional, kept as typed (owner, 28 Nov 2026).
+      const size = normalizeArticleValue(String(l.size ?? '')).slice(0, 20)
+      const colour = normalizeArticleValue(String(l.colour ?? '')).slice(0, 40)
+      return {
+        artNumber: normalizeArticleValue(String(l.artNumber ?? '')).slice(0, 60),
+        mrp: Math.max(0, Math.round(Number(l.mrp) * 100) / 100 || 0),
+        qty: Math.max(0, Math.floor(Number(l.qty) || 0)),
+        ...(size ? { size } : {}),
+        ...(colour ? { colour } : {}),
+      }
+    }).filter((l) => l.artNumber && l.qty > 0),
   }
 }
 
