@@ -1162,9 +1162,10 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
                 </span>
               </span>
             </summary>
-            <div className="max-h-64 overflow-y-auto border-t border-border">
+            {/* Grouped (owner, 27 Nov 2026): Fulfilled · Not fulfilled · Not on the order, together in one list. */}
+            <div className="max-h-80 overflow-y-auto border-t border-border">
               <table className="w-full border-collapse text-sm">
-                <thead className="sticky top-0 bg-card">
+                <thead className="sticky top-0 z-10 bg-card">
                   <tr className="text-xs text-muted-foreground">
                     <th className="px-4 py-1.5 text-left font-medium">Article</th>
                     <th className="px-2 py-1.5 text-left font-medium">Colour</th>
@@ -1172,23 +1173,55 @@ export function BillingScannerPage({ vendors, articles = [], onBillGenerated, pi
                     <th className="px-4 py-1.5 text-right font-medium">Scanned</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {order.items.map(i => {
-                    const got = receipt.received.get(i.id) ?? 0
-                    const tone = got >= i.quantityOrdered ? 'text-emerald-600 dark:text-emerald-400' : got > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
-                    return (
-                      <tr key={i.id} className="border-t border-border/50">
-                        <td className="px-4 py-1.5 font-semibold" data-no-translate>{i.artNumber}</td>
-                        <td className="px-2 py-1.5 text-xs uppercase text-muted-foreground" data-no-translate>{i.colorNumber ?? '—'}</td>
-                        <td className="px-2 py-1.5 tabular-nums">{i.sizeNumber ?? '—'}</td>
-                        <td className={`px-4 py-1.5 text-right font-bold tabular-nums ${tone}`}>{`${got} / ${i.quantityOrdered}`}</td>
+                {([
+                  { key: 'done', title: 'Fulfilled', dot: 'bg-emerald-500', rows: order.items.filter(i => (receipt.received.get(i.id) ?? 0) >= i.quantityOrdered) },
+                  { key: 'short', title: 'Not fulfilled', dot: 'bg-amber-500', rows: order.items.filter(i => (receipt.received.get(i.id) ?? 0) < i.quantityOrdered) },
+                ] as const).map(g => {
+                  const pairs = g.rows.reduce((t, i) => t + (g.key === 'done' ? i.quantityOrdered : i.quantityOrdered - (receipt.received.get(i.id) ?? 0)), 0)
+                  return (
+                    <tbody key={g.key}>
+                      <tr className="border-t border-border bg-muted/40">
+                        <th colSpan={4} scope="colgroup" className="px-4 py-1.5 text-left text-xs font-semibold">
+                          <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${g.dot}`} aria-hidden />
+                          {g.title}
+                          <span className="ml-2 font-normal text-muted-foreground">
+                            {g.key === 'done' ? `${g.rows.length} line(s) · ${pairs} pairs` : `${g.rows.length} line(s) · ${pairs} pairs short`}
+                          </span>
+                        </th>
                       </tr>
-                    )
-                  })}
+                      {g.rows.length === 0 && (
+                        <tr className="border-t border-border/50"><td colSpan={4} className="px-4 py-1.5 text-xs text-muted-foreground">None</td></tr>
+                      )}
+                      {g.rows.map(i => {
+                        const got = receipt.received.get(i.id) ?? 0
+                        const tone = got >= i.quantityOrdered ? 'text-emerald-600 dark:text-emerald-400' : got > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+                        return (
+                          <tr key={i.id} className="border-t border-border/50">
+                            <td className="px-4 py-1.5 font-semibold" data-no-translate>{i.artNumber}</td>
+                            <td className="px-2 py-1.5 text-xs uppercase text-muted-foreground" data-no-translate>{i.colorNumber ?? '—'}</td>
+                            <td className="px-2 py-1.5 tabular-nums">{i.sizeNumber ?? '—'}</td>
+                            <td className={`px-4 py-1.5 text-right font-bold tabular-nums ${tone}`}>{`${got} / ${i.quantityOrdered}`}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  )
+                })}
+                <tbody>
+                  <tr className="border-t border-border bg-muted/40">
+                    <th colSpan={4} scope="colgroup" className="px-4 py-1.5 text-left text-xs font-semibold">
+                      <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-red-500 align-middle" aria-hidden />
+                      Not on the order
+                      <span className="ml-2 font-normal text-muted-foreground">{`${extraBoxes} box(es)`}</span>
+                    </th>
+                  </tr>
+                  {receipt.extra.length === 0 && (
+                    <tr className="border-t border-border/50"><td colSpan={4} className="px-4 py-1.5 text-xs text-muted-foreground">None</td></tr>
+                  )}
                   {receipt.extra.map(e => (
-                    <tr key={e.label} className="border-t border-border/50 bg-amber-500/5">
-                      <td colSpan={3} className="px-4 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-400" data-no-translate>{`${e.label} — not on the order`}</td>
-                      <td className="px-4 py-1.5 text-right font-bold tabular-nums text-amber-700 dark:text-amber-400">{`+${e.qty}`}</td>
+                    <tr key={e.label} className="border-t border-border/50">
+                      <td colSpan={3} className="px-4 py-1.5 text-xs font-medium text-red-700 dark:text-red-400" data-no-translate>{e.label}</td>
+                      <td className="px-4 py-1.5 text-right font-bold tabular-nums text-red-700 dark:text-red-400">{`+${e.qty}`}</td>
                     </tr>
                   ))}
                 </tbody>
